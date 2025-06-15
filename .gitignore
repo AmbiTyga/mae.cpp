@@ -1,0 +1,58 @@
+# Build directories
+build/
+cmake-build-*/
+
+# Data directories
+data/
+datasets/
+
+# Checkpoint directories
+checkpoints/
+*.pt
+*.pth
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Python cache (for scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+
+# LibTorch
+libtorch/
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+
+# Compiled files
+*.o
+*.so
+*.dll
+*.dylib
+*.exe
+
+# Documentation build
+docs/_build/
+docs/html/
+
+# Environment files
+.env
+venv/
+env/
+mae/
+pytorch-image-models/
+.claude/

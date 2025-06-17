@@ -307,7 +307,7 @@ torch::Tensor MaskedAutoencoderViTImpl::forward_decoder(const torch::Tensor& x, 
     // Append mask tokens to sequence
     auto mask_tokens = mask_token.repeat({x_decoded.size(0), ids_restore.size(1) + 1 - x_decoded.size(1), 1});
     auto x_ = torch::cat({x_decoded.slice(1, 1), mask_tokens}, 1);
-    x_ = torch::gather(x_, 1, ids_restore.unsqueeze(-1).repeat({1, 1, x_decoded.size(2)}));
+    x_ = torch::gather(x_, 1, ids_restore.unsqueeze(-1).repeat({1, 1, x_.size(2)}));
     x_decoded = torch::cat({x_decoded.slice(1, 0, 1), x_}, 1);
     
     // Add pos embed
@@ -331,6 +331,14 @@ torch::Tensor MaskedAutoencoderViTImpl::forward_decoder(const torch::Tensor& x, 
 torch::Tensor MaskedAutoencoderViTImpl::forward_loss(const torch::Tensor& imgs, const torch::Tensor& pred, 
                                                    const torch::Tensor& mask) {
     auto target = patchify(imgs);
+    
+    // Debug shapes
+    if (target.size(1) != pred.size(1) || target.size(2) != pred.size(2)) {
+        std::cerr << "Shape mismatch in forward_loss:" << std::endl;
+        std::cerr << "  target shape: " << target.sizes() << std::endl;
+        std::cerr << "  pred shape: " << pred.sizes() << std::endl;
+        std::cerr << "  mask shape: " << mask.sizes() << std::endl;
+    }
     
     if (norm_pix_loss) {
         auto mean = target.mean(-1, true);

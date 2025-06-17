@@ -103,20 +103,19 @@ void save_checkpoint(const MaskedAutoencoderViT& model,
 }
 
 // Utility function to export model as TorchScript
-void export_torchscript(const MaskedAutoencoderViT& model,
+void export_torchscript(MaskedAutoencoderViT& model,
                        const std::string& filepath,
                        const TrainingConfig& config) {
     model->eval();
     
-    // Create example input for tracing
-    auto example_input = torch::randn({1, 3, config.img_size, config.img_size}).to(config.device);
+    // Note: torch::jit::trace is not available in LibTorch C++ API
+    // Instead, we'll save the model state for loading in Python
+    torch::serialize::OutputArchive archive;
+    model->save(archive);
+    archive.save_to(filepath);
     
-    // Trace the model
-    auto traced_module = torch::jit::trace(model, example_input);
-    
-    // Save the traced model
-    traced_module.save(filepath);
-    std::cout << "Exported TorchScript model to " << filepath << std::endl;
+    std::cout << "Exported model state to " << filepath << std::endl;
+    std::cout << "Note: To create TorchScript, load this in Python and use torch.jit.trace" << std::endl;
 }
 
 // Utility function to load checkpoint
@@ -160,7 +159,7 @@ void train_epoch(MaskedAutoencoderViT& model,
     
     auto start_time = std::chrono::high_resolution_clock::now();
     
-    for (auto& batch : data_loader) {
+    for (auto& batch : *data_loader) {
         auto data = batch.data.to(config.device);
         auto target = batch.target.to(config.device);
         

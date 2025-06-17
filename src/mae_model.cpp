@@ -262,8 +262,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> MaskedAutoencoderViTImpl
     
     auto noise = torch::rand({N, L}, x.options());
     
-    auto ids_shuffle = torch::argsort(noise, /*dim=*/1);
-    auto ids_restore = torch::argsort(ids_shuffle, /*dim=*/1);
+    auto ids_shuffle = torch::argsort(noise, 1, /*descending=*/false);
+    auto ids_restore = torch::argsort(ids_shuffle, 1, /*descending=*/false);
     
     auto ids_keep = ids_shuffle.slice(1, 0, len_keep);
     auto x_masked = torch::gather(x, 1, ids_keep.unsqueeze(-1).repeat({1, 1, D}));

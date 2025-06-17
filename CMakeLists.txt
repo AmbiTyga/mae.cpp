@@ -18,6 +18,7 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 set(SOURCES
     src/mae_model.cpp
     src/data_loader.cpp
+    src/mae_inference.cpp
 )
 
 # Create library
@@ -28,14 +29,50 @@ target_link_libraries(mae_lib "${TORCH_LIBRARIES}" ${OpenCV_LIBS})
 add_executable(train_mae src/train_mae.cpp)
 target_link_libraries(train_mae mae_lib "${TORCH_LIBRARIES}" ${OpenCV_LIBS})
 
+# Download and setup cpp-httplib
+include(FetchContent)
+FetchContent_Declare(
+    httplib
+    GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
+    GIT_TAG v0.14.1
+)
+FetchContent_MakeAvailable(httplib)
+
+# Download and setup nlohmann/json
+FetchContent_Declare(
+    json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG v3.11.2
+)
+FetchContent_MakeAvailable(json)
+
+# Download and setup cxxopts
+FetchContent_Declare(
+    cxxopts
+    GIT_REPOSITORY https://github.com/jarro2783/cxxopts.git
+    GIT_TAG v3.1.1
+)
+FetchContent_MakeAvailable(cxxopts)
+
+# Create inference server executable
+add_executable(mae_server src/mae_server.cpp)
+target_link_libraries(mae_server 
+    mae_lib 
+    "${TORCH_LIBRARIES}" 
+    ${OpenCV_LIBS}
+    httplib::httplib
+    nlohmann_json::nlohmann_json
+    cxxopts::cxxopts
+)
+
 # Set RPATH for executables
 if (APPLE)
-    set_target_properties(train_mae PROPERTIES
+    set_target_properties(train_mae mae_server PROPERTIES
         BUILD_RPATH "@loader_path/../lib"
         INSTALL_RPATH "@loader_path/../lib"
     )
 elseif (UNIX)
-    set_target_properties(train_mae PROPERTIES
+    set_target_properties(train_mae mae_server PROPERTIES
         BUILD_RPATH "$ORIGIN/../lib"
         INSTALL_RPATH "$ORIGIN/../lib"
     )

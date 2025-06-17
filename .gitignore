@@ -56,3 +56,6 @@ env/
 mae/
 pytorch-image-models/
 .claude/
+
+include/2.hpp
+src/1.cpp

@@ -100,6 +100,23 @@ void save_checkpoint(const MaskedAutoencoderViT& model,
     std::cout << "Saved checkpoint to " << filepath << std::endl;
 }
 
+// Utility function to export model as TorchScript
+void export_torchscript(const MaskedAutoencoderViT& model,
+                       const std::string& filepath,
+                       const TrainingConfig& config) {
+    model->eval();
+    
+    // Create example input for tracing
+    auto example_input = torch::randn({1, 3, config.img_size, config.img_size}).to(config.device);
+    
+    // Trace the model
+    auto traced_module = torch::jit::trace(model, {example_input});
+    
+    // Save the traced model
+    traced_module.save(filepath);
+    std::cout << "Exported TorchScript model to " << filepath << std::endl;
+}
+
 // Utility function to load checkpoint
 bool load_checkpoint(MaskedAutoencoderViT& model,
                     torch::optim::Optimizer& optimizer,
@@ -283,6 +300,10 @@ int main(int argc, char* argv[]) {
     }
     
     std::cout << "\nTraining completed!" << std::endl;
+    
+    // Export final model as TorchScript for inference
+    std::string torchscript_path = config.checkpoint_dir + "/mae_model.pt";
+    export_torchscript(model, torchscript_path, config);
     
     return 0;
 }

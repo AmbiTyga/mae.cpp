@@ -1,4 +1,4 @@
-#paragma once
+#pragma once
 
 #include <torch/torch.h>
 #include <vector>
@@ -75,6 +75,14 @@ class AttentionImpl : public torch::nn::Module{
         );
         // Forward method
         torch::Tensor forward(torch::Tensor x);
+    
+    private:
+        int64_t num_heads;
+        double scale;
+        torch::nn::Linear qkv{nullptr};
+        torch::nn::Dropout attn_drop{nullptr};
+        torch::nn::Linear proj{nullptr};
+        torch::nn::Dropout proj_drop{nullptr};
 };
 TORCH_MODULE(Attention);
 
@@ -86,7 +94,7 @@ class BlockImpl : public torch::nn::Module{
             double mlp_ratio = 4.,
             bool qkv_bias = false,
             float drop = 0.,
-            float attn_drop = 0.
+            float attn_drop = 0.,
             float drop_path = 0.
         );
         // Forward Method
@@ -95,7 +103,7 @@ class BlockImpl : public torch::nn::Module{
         torch::nn::LayerNorm norm1{nullptr};
         Attention attn{nullptr};
         torch::nn::LayerNorm norm2{nullptr};
-        Mlp mlp(nullptr);
+        Mlp mlp{nullptr};
         float drop_path_prob;
         torch::Tensor drop_path(const torch::Tensor& x);
 };
@@ -137,7 +145,7 @@ class MaskedAutoencoderViTImpl : public torch::nn::Module{
             const torch::Tensor& imgs,
             const torch::Tensor& pred,
             const torch::Tensor& mask
-        )
+        );
 
         //Utility functions
         torch::Tensor patchify(const torch::Tensor& imgs);
@@ -148,7 +156,7 @@ class MaskedAutoencoderViTImpl : public torch::nn::Module{
         );
     
     private:
-        void intialize_weights();
+        void initialize_weights();
 
         // encoder
         PatchEmbed patch_embed{nullptr};

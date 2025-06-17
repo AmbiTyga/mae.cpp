@@ -81,14 +81,14 @@ torch::Tensor MlpImpl::forward(torch::Tensor x) {
 }
 
 // Attention implementation
-AttentionImpl::AttentionImpl(int64_t dim, int64_t num_heads, bool qkv_bias, float attn_drop, float proj_drop) 
+AttentionImpl::AttentionImpl(int64_t dim, int64_t num_heads, bool qkv_bias, float attn_drop_p, float proj_drop_p) 
     : num_heads(num_heads) {
     scale = 1.0 / std::sqrt(static_cast<double>(dim / num_heads));
     
     qkv = register_module("qkv", torch::nn::Linear(torch::nn::LinearOptions(dim, dim * 3).bias(qkv_bias)));
-    attn_drop = register_module("attn_drop", torch::nn::Dropout(attn_drop));
+    attn_drop = register_module("attn_drop", torch::nn::Dropout(attn_drop_p));
     proj = register_module("proj", torch::nn::Linear(dim, dim));
-    proj_drop = register_module("proj_drop", torch::nn::Dropout(proj_drop));
+    proj_drop = register_module("proj_drop", torch::nn::Dropout(proj_drop_p));
 }
 
 torch::Tensor AttentionImpl::forward(torch::Tensor x) {
@@ -101,11 +101,11 @@ torch::Tensor AttentionImpl::forward(torch::Tensor x) {
     auto k = qkv_out[1];
     auto v = qkv_out[2];
     
-    auto attn = (q @ k.transpose(-2, -1)) * scale;
+    auto attn = torch::matmul(q, k.transpose(-2, -1)) * scale;
     attn = attn.softmax(-1);
     attn = attn_drop(attn);
     
-    x = (attn @ v).transpose(1, 2).reshape({B, N, C});
+    x = torch::matmul(attn, v).transpose(1, 2).reshape({B, N, C});
     x = proj(x);
     x = proj_drop(x);
     

@@ -340,7 +340,7 @@ torch::Tensor MaskedAutoencoderViTImpl::forward_loss(const torch::Tensor& imgs, 
     
     if (norm_pix_loss) {
         auto mean = target.mean(-1, true);  // Keep dimension
-        auto var = target.var(-1, true);     // Keep dimension
+        auto var = target.var(-1, false, true);  // unbiased=false, keepdim=true
         std::cerr << "  mean shape: " << mean.sizes() << std::endl;
         std::cerr << "  var shape: " << var.sizes() << std::endl;
         target = (target - mean) / torch::sqrt(var + 1e-6);

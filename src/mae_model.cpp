@@ -332,18 +332,18 @@ torch::Tensor MaskedAutoencoderViTImpl::forward_loss(const torch::Tensor& imgs, 
                                                    const torch::Tensor& mask) {
     auto target = patchify(imgs);
     
-    // Debug shapes
-    if (target.size(1) != pred.size(1) || target.size(2) != pred.size(2)) {
-        std::cerr << "Shape mismatch in forward_loss:" << std::endl;
-        std::cerr << "  target shape: " << target.sizes() << std::endl;
-        std::cerr << "  pred shape: " << pred.sizes() << std::endl;
-        std::cerr << "  mask shape: " << mask.sizes() << std::endl;
-    }
+    // Always print shapes for debugging
+    std::cerr << "forward_loss debug:" << std::endl;
+    std::cerr << "  target shape: " << target.sizes() << std::endl;
+    std::cerr << "  pred shape: " << pred.sizes() << std::endl;
+    std::cerr << "  mask shape: " << mask.sizes() << std::endl;
     
     if (norm_pix_loss) {
-        auto mean = target.mean(-1, true);
-        auto var = target.var(-1, true);
-        target = (target - mean) / (var + 1e-6).sqrt();
+        auto mean = target.mean(-1, true);  // Keep dimension
+        auto var = target.var(-1, true);     // Keep dimension
+        std::cerr << "  mean shape: " << mean.sizes() << std::endl;
+        std::cerr << "  var shape: " << var.sizes() << std::endl;
+        target = (target - mean) / torch::sqrt(var + 1e-6);
     }
     
     auto loss = (pred - target).pow(2);

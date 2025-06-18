@@ -87,8 +87,8 @@ endif()
 # Copy libraries to build directory
 if (MSVC)
     file(GLOB TORCH_DLLS "${TORCH_INSTALL_PREFIX}/lib/*.dll")
-    add_custom_command(TARGET train_mae POST_BUILD
+    add_custom_command(TARGET pretrain_mae POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${TORCH_DLLS}
-        $<TARGET_FILE_DIR:train_mae>)
+        $<TARGET_FILE_DIR:pretrain_mae>)
 endif()

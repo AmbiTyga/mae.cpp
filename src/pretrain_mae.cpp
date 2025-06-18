@@ -156,6 +156,7 @@ void train_one_epoch(MaskedAutoencoderViT& model,
                     const PretrainConfig& config,
                     int64_t epoch,
                     int64_t& global_step,
+                    size_t iterations_per_epoch,
                     CosineAnnealingWarmupScheduler& lr_scheduler,
                     MetricLogger& metric_logger,
                     PretrainLogger& logger) {
@@ -173,7 +174,7 @@ void train_one_epoch(MaskedAutoencoderViT& model,
             std::chrono::high_resolution_clock::now() - data_start).count();
         
         // Update learning rate per iteration (following MAE paper)
-        double lr = lr_scheduler.get_lr(epoch + static_cast<double>(batch_idx) / data_loader->size().value());
+        double lr = lr_scheduler.get_lr(epoch + static_cast<double>(batch_idx) / iterations_per_epoch);
         for (auto& param_group : optimizer.param_groups()) {
             param_group.options().set_lr(lr);
         }
@@ -219,9 +220,9 @@ void train_one_epoch(MaskedAutoencoderViT& model,
         // Print progress
         if (batch_idx % config.print_freq == 0) {
             double samples_per_sec = config.batch_size / iter_time;
-            double eta_seconds = (data_loader->size().value() - batch_idx) * iter_time;
+            double eta_seconds = (iterations_per_epoch - batch_idx) * iter_time;
             
-            logger << "Epoch: [" << epoch << "][" << batch_idx << "/" << data_loader->size().value() << "]  "
+            logger << "Epoch: [" << epoch << "][" << batch_idx << "/" << iterations_per_epoch << "]  "
                    << "eta: " << std::fixed << std::setprecision(0) << eta_seconds << "s  "
                    << "loss: " << metric_logger.get_str("loss") << "  "
                    << "lr: " << std::scientific << std::setprecision(2) << lr << "  "
@@ -309,8 +310,11 @@ int main(int argc, char* argv[]) {
     logger << "Model parameters: " << param_count / 1e6 << "M" << std::endl << std::endl;
     
     // Create dataset with proper augmentation
-    auto dataset = ImageFolderDataset(config.data_path, config.input_size)
-        .map(torch::data::transforms::Stack<>());
+    ImageFolderDataset dataset_raw(config.data_path, config.input_size);
+    size_t dataset_size = dataset_raw.size().value();
+    size_t iterations_per_epoch = dataset_size / config.batch_size;
+    
+    auto dataset = dataset_raw.map(torch::data::transforms::Stack<>());
     
     auto data_loader = torch::data::make_data_loader(
         std::move(dataset),
@@ -320,8 +324,8 @@ int main(int argc, char* argv[]) {
             .drop_last(true)
     );
     
-    logger << "Dataset size: " << data_loader->size().value() * config.batch_size << " images" << std::endl;
-    logger << "Iterations per epoch: " << data_loader->size().value() << std::endl << std::endl;
+    logger << "Dataset size: " << dataset_size << " images" << std::endl;
+    logger << "Iterations per epoch: " << iterations_per_epoch << std::endl << std::endl;
     
     // Create optimizer
     auto optimizer = torch::optim::AdamW(
@@ -355,7 +359,7 @@ int main(int argc, char* argv[]) {
     for (int64_t epoch = start_epoch; epoch < config.epochs; ++epoch) {
         // Train for one epoch
         train_one_epoch(model, data_loader, optimizer, config, epoch, global_step,
-                       lr_scheduler, metric_logger, logger);
+                       iterations_per_epoch, lr_scheduler, metric_logger, logger);
         
         // Save checkpoint at epoch intervals
         if ((epoch + 1) % config.save_freq_epochs == 0 || epoch == config.epochs - 1) {

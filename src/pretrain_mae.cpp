@@ -344,11 +344,29 @@ int main(int argc, char* argv[]) {
     int64_t global_step = 0;
     
     if (!config.resume.empty()) {
-        load_checkpoint(model, optimizer, start_epoch, global_step, config.resume, logger);
+        // Look for checkpoint in the checkpoint directory
+        std::string checkpoint_path = config.resume;
+        
+        // If resume is just a filename, prepend the checkpoint directory
+        if (checkpoint_path.find('/') == std::string::npos) {
+            checkpoint_path = config.checkpoint_dir + "/" + checkpoint_path;
+        }
+        
+        if (std::filesystem::exists(checkpoint_path)) {
+            load_checkpoint(model, optimizer, start_epoch, global_step, checkpoint_path, logger);
+        } else {
+            logger << "Warning: Resume checkpoint '" << checkpoint_path << "' not found." << std::endl;
+            logger << "Starting pretraining from scratch..." << std::endl;
+            logger << "========================================" << std::endl;
+        }
     } else if (config.auto_resume) {
         std::string latest_checkpoint = config.checkpoint_dir + "/latest.pt";
         if (std::filesystem::exists(latest_checkpoint)) {
             load_checkpoint(model, optimizer, start_epoch, global_step, latest_checkpoint, logger);
+        } else {
+            logger << "No checkpoint found for auto-resume." << std::endl;
+            logger << "Starting pretraining from scratch..." << std::endl;
+            logger << "========================================" << std::endl;
         }
     }
     

@@ -1,8 +1,8 @@
 #pragma once
 
 #include <torch/torch.h>
-#include <nlohmann/json.hpp>
 #include <opencv2/opencv.hpp>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <fstream>
 #include <random>

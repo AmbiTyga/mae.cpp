@@ -24,7 +24,8 @@ set(SOURCES
 
 # Create library
 add_library(mae_lib ${SOURCES})
-target_link_libraries(mae_lib "${TORCH_LIBRARIES}" ${OpenCV_LIBS})
+target_link_libraries(mae_lib "${TORCH_LIBRARIES}" ${OpenCV_LIBS} nlohmann_json::nlohmann_json)
+target_include_directories(mae_lib PUBLIC ${CMAKE_SOURCE_DIR}/include)
 
 # Create training executable
 add_executable(train_mae src/train_mae.cpp)
@@ -51,8 +52,7 @@ FetchContent_MakeAvailable(httplib)
 # Download and setup nlohmann/json
 FetchContent_Declare(
     json
-    GIT_REPOSITORY https://github.com/nlohmann/json.git
-    GIT_TAG v3.11.2
+    URL https://github.com/nlohmann/json/releases/download/v3.11.2/json.tar.xz
 )
 FetchContent_MakeAvailable(json)
 

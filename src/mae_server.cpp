@@ -11,6 +11,7 @@
 #include <nlohmann/json.hpp>
 #include <chrono>
 #include <cxxopts.hpp>
+#include <iomanip>
 
 using json = nlohmann::json;
 
@@ -112,6 +113,22 @@ public:
         std::cout << "Initialized MAE server with model: " << model_path << std::endl;
         std::cout << "Device: " << (device.is_cuda() ? "CUDA" : "CPU") << std::endl;
         
+        // Open log file
+        auto now = std::chrono::system_clock::now();
+        auto time_t = std::chrono::system_clock::to_time_t(now);
+        std::stringstream log_filename;
+        log_filename << "mae_server_" << std::put_time(std::localtime(&time_t), "%Y%m%d_%H%M%S") << ".log";
+        log_file_.open(log_filename.str(), std::ios::app);
+        
+        if (log_file_.is_open()) {
+            log_file_ << "MAE Server started at " << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S") << std::endl;
+            log_file_ << "Model: " << model_path << std::endl;
+            log_file_ << "Device: " << (device.is_cuda() ? "CUDA" : "CPU") << std::endl;
+            log_file_ << "Host: " << host << ":" << port << std::endl;
+            log_file_ << "----------------------------------------" << std::endl;
+            std::cout << "Logging to: " << log_filename.str() << std::endl;
+        }
+        
         // Setup routes
         setup_routes();
     }
@@ -121,7 +138,37 @@ public:
         server_.listen(host_.c_str(), port_);
     }
     
+    ~MAEServer() {
+        if (log_file_.is_open()) {
+            auto now = std::chrono::system_clock::now();
+            auto time_t = std::chrono::system_clock::to_time_t(now);
+            log_file_ << "MAE Server stopped at " << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S") << std::endl;
+            log_file_.close();
+        }
+    }
+    
 private:
+    void log_request(const std::string& endpoint, const std::string& method, 
+                     const std::string& client_ip, const std::string& status,
+                     const std::string& details = "") {
+        if (log_file_.is_open()) {
+            auto now = std::chrono::system_clock::now();
+            auto time_t = std::chrono::system_clock::to_time_t(now);
+            
+            log_file_ << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S") << " | "
+                     << method << " " << endpoint << " | "
+                     << "Client: " << client_ip << " | "
+                     << "Status: " << status;
+            
+            if (!details.empty()) {
+                log_file_ << " | " << details;
+            }
+            
+            log_file_ << std::endl;
+            log_file_.flush();
+        }
+    }
+    
     void setup_routes() {
         // Health check endpoint
         server_.Get("/health", [](const httplib::Request&, httplib::Response& res) {
@@ -142,6 +189,9 @@ private:
         
         // Reconstruction endpoint with multipart support
         server_.Post("/reconstruct/multipart", [this](const httplib::Request& req, httplib::Response& res) {
+            std::string client_ip = req.get_header_value("REMOTE_ADDR");
+            if (client_ip.empty()) client_ip = "unknown";
+            
             try {
                 auto start = std::chrono::high_resolution_clock::now();
                 
@@ -151,11 +201,13 @@ private:
                     error["error"] = "No image file in multipart request";
                     res.status = 400;
                     res.set_content(error.dump(), "application/json");
+                    log_request("/reconstruct/multipart", "POST", client_ip, "ERROR", "No image file in request");
                     return;
                 }
                 
                 // Get uploaded file
                 const auto& file = req.get_file_value("image");
+                std::string file_info = "filename=" + file.filename + ", size=" + std::to_string(file.content.size()) + " bytes";
                 
                 // Get mask ratio from form data
                 float mask_ratio = 0.75f;
@@ -172,15 +224,42 @@ private:
                     error["error"] = "Failed to decode image";
                     res.status = 400;
                     res.set_content(error.dump(), "application/json");
+                    log_request("/reconstruct/multipart", "POST", client_ip, "ERROR", 
+                               "Failed to decode image - " + file_info);
                     return;
                 }
+                
+                std::string img_info = "image_size=" + std::to_string(img.cols) + "x" + std::to_string(img.rows) + 
+                                      ", channels=" + std::to_string(img.channels());
                 
                 // Run reconstruction
                 cv::Mat reconstructed = model_->reconstruct_image(img, mask_ratio);
                 
+                // Verify reconstruction
+                if (reconstructed.empty()) {
+                    json error;
+                    error["error"] = "Reconstruction failed - output is empty";
+                    res.status = 500;
+                    res.set_content(error.dump(), "application/json");
+                    log_request("/reconstruct/multipart", "POST", client_ip, "ERROR", 
+                               "Reconstruction failed - empty output - " + img_info);
+                    return;
+                }
+                
                 // Encode result
                 std::vector<uchar> buf;
-                cv::imencode(".png", reconstructed, buf);
+                bool encode_success = cv::imencode(".png", reconstructed, buf);
+                
+                if (!encode_success || buf.empty()) {
+                    json error;
+                    error["error"] = "Failed to encode reconstructed image";
+                    res.status = 500;
+                    res.set_content(error.dump(), "application/json");
+                    log_request("/reconstruct/multipart", "POST", client_ip, "ERROR", 
+                               "Failed to encode output - " + img_info);
+                    return;
+                }
+                
                 std::string result_base64 = base64_encode(buf);
                 
                 auto end = std::chrono::high_resolution_clock::now();
@@ -194,11 +273,21 @@ private:
                 
                 res.set_content(response.dump(), "application/json");
                 
+                // Log successful request
+                std::stringstream details;
+                details << file_info << ", " << img_info 
+                       << ", mask_ratio=" << mask_ratio 
+                       << ", output_size=" + std::to_string(buf.size()) + " bytes"
+                       << ", time=" << duration.count() << "ms";
+                log_request("/reconstruct/multipart", "POST", client_ip, "SUCCESS", details.str());
+                
             } catch (const std::exception& e) {
                 json error;
                 error["error"] = e.what();
                 res.status = 500;
                 res.set_content(error.dump(), "application/json");
+                log_request("/reconstruct/multipart", "POST", client_ip, "ERROR", 
+                           std::string("Exception: ") + e.what());
             }
         });
         
@@ -264,16 +353,28 @@ private:
         
         // Binary reconstruction endpoint - returns raw image bytes
         server_.Post("/reconstruct/binary", [this](const httplib::Request& req, httplib::Response& res) {
+            std::string client_ip = req.get_header_value("REMOTE_ADDR");
+            if (client_ip.empty()) client_ip = "unknown";
+            
             try {
+                auto start = std::chrono::high_resolution_clock::now();
+                
                 // Get raw image bytes from request body
                 std::vector<uchar> image_data(req.body.begin(), req.body.end());
+                std::string input_info = "input_size=" + std::to_string(req.body.size()) + " bytes";
+                
                 cv::Mat img = cv::imdecode(image_data, cv::IMREAD_COLOR);
                 
                 if (img.empty()) {
                     res.status = 400;
                     res.set_content("Failed to decode image", "text/plain");
+                    log_request("/reconstruct/binary", "POST", client_ip, "ERROR", 
+                               "Failed to decode image - " + input_info);
                     return;
                 }
+                
+                std::string img_info = "image_size=" + std::to_string(img.cols) + "x" + std::to_string(img.rows) + 
+                                      ", channels=" + std::to_string(img.channels());
                 
                 // Get mask ratio from header or use default
                 float mask_ratio = 0.75f;
@@ -284,15 +385,44 @@ private:
                 // Run reconstruction
                 cv::Mat reconstructed = model_->reconstruct_image(img, mask_ratio);
                 
+                if (reconstructed.empty()) {
+                    res.status = 500;
+                    res.set_content("Reconstruction failed", "text/plain");
+                    log_request("/reconstruct/binary", "POST", client_ip, "ERROR", 
+                               "Reconstruction failed - empty output - " + img_info);
+                    return;
+                }
+                
                 // Encode as PNG and return binary
                 std::vector<uchar> buf;
-                cv::imencode(".png", reconstructed, buf);
+                bool encode_success = cv::imencode(".png", reconstructed, buf);
+                
+                if (!encode_success || buf.empty()) {
+                    res.status = 500;
+                    res.set_content("Failed to encode output", "text/plain");
+                    log_request("/reconstruct/binary", "POST", client_ip, "ERROR", 
+                               "Failed to encode output - " + img_info);
+                    return;
+                }
                 
                 res.set_content(reinterpret_cast<const char*>(buf.data()), buf.size(), "image/png");
+                
+                auto end = std::chrono::high_resolution_clock::now();
+                auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+                
+                // Log successful request
+                std::stringstream details;
+                details << input_info << ", " << img_info 
+                       << ", mask_ratio=" << mask_ratio 
+                       << ", output_size=" + std::to_string(buf.size()) + " bytes"
+                       << ", time=" << duration.count() << "ms";
+                log_request("/reconstruct/binary", "POST", client_ip, "SUCCESS", details.str());
                 
             } catch (const std::exception& e) {
                 res.status = 500;
                 res.set_content(e.what(), "text/plain");
+                log_request("/reconstruct/binary", "POST", client_ip, "ERROR", 
+                           std::string("Exception: ") + e.what());
             }
         });
         
@@ -637,6 +767,7 @@ private:
     httplib::Server server_;
     std::string host_;
     int port_;
+    std::ofstream log_file_;
 };
 
 int main(int argc, char* argv[]) {

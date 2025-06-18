@@ -1,0 +1,61 @@
+{
+    "model": {
+        "type": "mae_vit_base_patch16",
+        "norm_pix_loss": true,
+        "mask_ratio": 0.75
+    },
+    "optimization": {
+        "batch_size": 64,
+        "base_lr": 1.5e-4,
+        "min_lr": 0.0,
+        "weight_decay": 0.05,
+        "optimizer": "adamw",
+        "adam_beta1": 0.9,
+        "adam_beta2": 0.95,
+        "gradient_clip": 1.0
+    },
+    "schedule": {
+        "epochs": 100,
+        "warmup_epochs": 10,
+        "start_epoch": 0
+    },
+    "data": {
+        "data_path": "./data/imagenet/train",
+        "input_size": 224,
+        "num_workers": 4,
+        "pin_memory": true,
+        "augmentation": {
+            "random_resized_crop": {
+                "scale": [0.2, 1.0],
+                "interpolation": "bicubic"
+            },
+            "random_horizontal_flip": true,
+            "normalize": {
+                "mean": [0.485, 0.456, 0.406],
+                "std": [0.229, 0.224, 0.225]
+            }
+        }
+    },
+    "checkpointing": {
+        "checkpoint_dir": "./checkpoints_test",
+        "save_freq_epochs": 10,
+        "save_freq_steps": 1000,
+        "keep_last_n": 3
+    },
+    "logging": {
+        "print_freq": 50,
+        "console_clear_freq": 100
+    },
+    "distributed": {
+        "enabled": false,
+        "backend": "nccl",
+        "world_size": 1,
+        "rank": 0
+    },
+    "misc": {
+        "seed": 0,
+        "resume": "",
+        "eval": false,
+        "auto_resume": true
+    }
+}

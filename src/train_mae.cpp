@@ -8,10 +8,10 @@
 #include <iomanip>
 #include <filesystem>
 
-// Simple logger class for dual output
+// Simple logger class for dual output with console clearing
 class DualLogger {
 public:
-    DualLogger(const std::string& filename) {
+    DualLogger(const std::string& filename) : console_line_count_(0), log_filename_(filename) {
         log_file_.open(filename, std::ios::app);
         if (!log_file_.is_open()) {
             std::cerr << "Warning: Could not open log file " << filename << std::endl;
@@ -41,11 +41,42 @@ public:
             log_file_ << pf;
             log_file_.flush();
         }
+        console_line_count_++;
+        
+        // Clear console after 100 lines to prevent memory issues
+        if (console_line_count_ >= 100) {
+            clearConsole();
+            console_line_count_ = 0;
+        }
         return *this;
+    }
+    
+    void clearConsole() {
+        #ifdef _WIN32
+            system("cls");
+        #else
+            system("clear");
+        #endif
+        std::cout << "Training in progress... Check " << log_filename_ << " for full logs" << std::endl;
+        std::cout << "----------------------------------------" << std::endl;
+    }
+    
+    const std::string& getFilename() const { return log_filename_; }
+    
+    // Copy current log to checkpoint directory
+    void copyLogToCheckpoint(const std::string& checkpoint_dir) {
+        if (log_file_.is_open()) {
+            log_file_.flush();
+            std::string dest_path = checkpoint_dir + "/" + log_filename_;
+            std::filesystem::copy_file(log_filename_, dest_path, 
+                                      std::filesystem::copy_options::overwrite_existing);
+        }
     }
     
 private:
     std::ofstream log_file_;
+    std::string log_filename_;
+    size_t console_line_count_;
 };
 
 // Training configuration
@@ -73,6 +104,7 @@ struct TrainingConfig {
     // Checkpointing
     std::string checkpoint_dir = "./checkpoints";
     int64_t save_freq = 20;
+    int64_t save_steps = 0;  // Save every N steps (0 = disabled)
     
     // Device
     torch::Device device = torch::cuda::is_available() ? torch::kCUDA : torch::kCPU;
@@ -122,7 +154,40 @@ private:
     double min_lr_;
 };
 
-// Utility function to save checkpoint
+// Utility function to save checkpoint with logs
+void save_checkpoint_with_logs(const MaskedAutoencoderViT& model, 
+                              const torch::optim::Optimizer& optimizer,
+                              int64_t epoch,
+                              int64_t step,
+                              double loss,
+                              const std::string& base_dir,
+                              const std::string& suffix,
+                              DualLogger& logger) {
+    // Create directory for this checkpoint
+    std::string checkpoint_dir = base_dir + "/" + suffix;
+    std::filesystem::create_directories(checkpoint_dir);
+    
+    // Save model checkpoint
+    std::string model_path = checkpoint_dir + "/model.pt";
+    torch::serialize::OutputArchive archive;
+    model->save(archive);
+    
+    // Save training state
+    archive.write("epoch", torch::tensor(epoch));
+    archive.write("step", torch::tensor(step));
+    archive.write("loss", torch::tensor(loss));
+    
+    archive.save_to(model_path);
+    
+    // Copy current log to checkpoint directory
+    logger.copyLogToCheckpoint(checkpoint_dir);
+    
+    logger << "Saved checkpoint to " << checkpoint_dir << " (epoch: " << epoch 
+           << ", step: " << step << ", loss: " << std::fixed << std::setprecision(4) 
+           << loss << ")" << std::endl;
+}
+
+// Wrapper for backward compatibility
 void save_checkpoint(const MaskedAutoencoderViT& model, 
                     const torch::optim::Optimizer& optimizer,
                     int64_t epoch,
@@ -131,16 +196,8 @@ void save_checkpoint(const MaskedAutoencoderViT& model,
                     DualLogger& logger) {
     torch::serialize::OutputArchive archive;
     model->save(archive);
-    
-    // Save optimizer state
-    // Note: In LibTorch 2.x, state_dict() is not directly available
-    // We'll save the model state for now
-    // TODO: Implement proper optimizer state saving if needed
-    
-    // Save epoch and loss
     archive.write("epoch", torch::tensor(epoch));
     archive.write("loss", torch::tensor(loss));
-    
     archive.save_to(filepath);
     logger << "Saved checkpoint to " << filepath << std::endl;
 }
@@ -196,6 +253,7 @@ void train_epoch(MaskedAutoencoderViT& model,
                 torch::optim::Optimizer& optimizer,
                 const TrainingConfig& config,
                 int64_t epoch,
+                int64_t& global_step,
                 DualLogger& logger) {
     model->train();
     
@@ -221,16 +279,25 @@ void train_epoch(MaskedAutoencoderViT& model,
         
         optimizer.step();
         
-        total_loss += loss.item().toDouble();
+        double current_loss = loss.item().toDouble();
+        total_loss += current_loss;
         batch_count++;
+        global_step++;
+        
+        // Save checkpoint at specified steps
+        if (config.save_steps > 0 && global_step % config.save_steps == 0) {
+            std::string suffix = "step-" + std::to_string(global_step);
+            save_checkpoint_with_logs(model, optimizer, epoch, global_step, current_loss, 
+                                    config.checkpoint_dir, suffix, logger);
+        }
         
         // Print progress
         if (batch_count % 100 == 0) {
             auto current_time = std::chrono::high_resolution_clock::now();
             auto duration = std::chrono::duration_cast<std::chrono::seconds>(current_time - start_time);
             
-            logger << "Epoch [" << epoch << "] Batch [" << batch_count << "] "
-                   << "Loss: " << std::fixed << std::setprecision(4) << loss.item().toDouble() 
+            logger << "Epoch [" << epoch << "] Step [" << global_step << "] Batch [" << batch_count << "] "
+                   << "Loss: " << std::fixed << std::setprecision(4) << current_loss 
                    << " Time: " << duration.count() << "s" << std::endl;
         }
     }
@@ -258,6 +325,23 @@ int main(int argc, char* argv[]) {
     if (argc > 3) {
         config.epochs = std::stoi(argv[3]);
     }
+    if (argc > 4) {
+        config.save_freq = std::stoi(argv[4]);
+    }
+    if (argc > 5) {
+        config.save_steps = std::stoi(argv[5]);
+    }
+    
+    // Print usage if needed
+    if (argc == 1) {
+        std::cout << "Usage: " << argv[0] << " <data_path> [batch_size] [epochs] [save_freq_epochs] [save_freq_steps]" << std::endl;
+        std::cout << "  data_path: Path to training data (required)" << std::endl;
+        std::cout << "  batch_size: Batch size (default: 64)" << std::endl;
+        std::cout << "  epochs: Number of epochs (default: 400)" << std::endl;
+        std::cout << "  save_freq_epochs: Save checkpoint every N epochs (default: 20)" << std::endl;
+        std::cout << "  save_freq_steps: Save checkpoint every N steps (default: 0, disabled)" << std::endl;
+        return 1;
+    }
     
     // Create logger with timestamp
     auto now = std::chrono::system_clock::now();
@@ -274,6 +358,8 @@ int main(int argc, char* argv[]) {
     logger << "  Learning rate: " << config.learning_rate << std::endl;
     logger << "  Mask ratio: " << config.mask_ratio << std::endl;
     logger << "  Data path: " << config.data_path << std::endl;
+    logger << "  Save frequency (epochs): " << config.save_freq << std::endl;
+    logger << "  Save frequency (steps): " << (config.save_steps > 0 ? std::to_string(config.save_steps) : "disabled") << std::endl;
     logger << std::endl;
     
     // Create model
@@ -333,6 +419,9 @@ int main(int argc, char* argv[]) {
         logger << "Resumed from epoch " << start_epoch << std::endl;
     }
     
+    // Initialize global step counter
+    int64_t global_step = 0;
+    
     // Training loop
     for (int64_t epoch = start_epoch; epoch < config.epochs; ++epoch) {
         // Update learning rate
@@ -341,15 +430,16 @@ int main(int argc, char* argv[]) {
                << scheduler.get_lr() << std::endl;
         
         // Train for one epoch
-        train_epoch(model, data_loader, optimizer, config, epoch, logger);
+        train_epoch(model, data_loader, optimizer, config, epoch, global_step, logger);
         
-        // Save checkpoint
+        // Save checkpoint at epoch intervals
         if ((epoch + 1) % config.save_freq == 0 || epoch == config.epochs - 1) {
-            std::string epoch_checkpoint = config.checkpoint_dir + "/mae_epoch_" + 
-                                         std::to_string(epoch) + ".pt";
-            save_checkpoint(model, optimizer, epoch, 0.0, epoch_checkpoint, logger);
+            // Save epoch checkpoint with logs
+            std::string suffix = "epoch-" + std::to_string(epoch);
+            save_checkpoint_with_logs(model, optimizer, epoch, global_step, 0.0, 
+                                    config.checkpoint_dir, suffix, logger);
             
-            // Also save as latest
+            // Also save as latest (simple checkpoint)
             save_checkpoint(model, optimizer, epoch, 0.0, checkpoint_path, logger);
         }
     }

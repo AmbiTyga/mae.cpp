@@ -19,6 +19,7 @@ set(SOURCES
     src/mae_model.cpp
     src/data_loader.cpp
     src/mae_inference.cpp
+    src/pretrain_utils.cpp
 )
 
 # Create library
@@ -28,6 +29,15 @@ target_link_libraries(mae_lib "${TORCH_LIBRARIES}" ${OpenCV_LIBS})
 # Create training executable
 add_executable(train_mae src/train_mae.cpp)
 target_link_libraries(train_mae mae_lib "${TORCH_LIBRARIES}" ${OpenCV_LIBS})
+
+# Create pretraining executable
+add_executable(pretrain_mae src/pretrain_mae.cpp)
+target_link_libraries(pretrain_mae 
+    mae_lib 
+    "${TORCH_LIBRARIES}" 
+    ${OpenCV_LIBS}
+    nlohmann_json::nlohmann_json
+)
 
 # Download and setup cpp-httplib
 include(FetchContent)

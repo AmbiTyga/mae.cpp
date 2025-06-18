@@ -140,7 +140,69 @@ private:
             res.set_content(response.dump(), "application/json");
         });
         
-        // Reconstruction endpoint
+        // Reconstruction endpoint with multipart support
+        server_.Post("/reconstruct/multipart", [this](const httplib::Request& req, httplib::Response& res) {
+            try {
+                auto start = std::chrono::high_resolution_clock::now();
+                
+                // Check if multipart
+                if (!req.has_file("image")) {
+                    json error;
+                    error["error"] = "No image file in multipart request";
+                    res.status = 400;
+                    res.set_content(error.dump(), "application/json");
+                    return;
+                }
+                
+                // Get uploaded file
+                const auto& file = req.get_file_value("image");
+                
+                // Get mask ratio from form data
+                float mask_ratio = 0.75f;
+                if (req.has_param("mask_ratio")) {
+                    mask_ratio = std::stof(req.get_param_value("mask_ratio"));
+                }
+                
+                // Decode image from file content
+                std::vector<uchar> image_data(file.content.begin(), file.content.end());
+                cv::Mat img = cv::imdecode(image_data, cv::IMREAD_COLOR);
+                
+                if (img.empty()) {
+                    json error;
+                    error["error"] = "Failed to decode image";
+                    res.status = 400;
+                    res.set_content(error.dump(), "application/json");
+                    return;
+                }
+                
+                // Run reconstruction
+                cv::Mat reconstructed = model_->reconstruct_image(img, mask_ratio);
+                
+                // Encode result
+                std::vector<uchar> buf;
+                cv::imencode(".png", reconstructed, buf);
+                std::string result_base64 = base64_encode(buf);
+                
+                auto end = std::chrono::high_resolution_clock::now();
+                auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+                
+                // Create response
+                json response;
+                response["reconstruction"] = result_base64;
+                response["mask_ratio"] = mask_ratio;
+                response["processing_time_ms"] = duration.count();
+                
+                res.set_content(response.dump(), "application/json");
+                
+            } catch (const std::exception& e) {
+                json error;
+                error["error"] = e.what();
+                res.status = 500;
+                res.set_content(error.dump(), "application/json");
+            }
+        });
+        
+        // Reconstruction endpoint (original JSON version)
         server_.Post("/reconstruct", [this](const httplib::Request& req, httplib::Response& res) {
             try {
                 auto start = std::chrono::high_resolution_clock::now();
@@ -197,6 +259,40 @@ private:
                 error["error"] = e.what();
                 res.status = 500;
                 res.set_content(error.dump(), "application/json");
+            }
+        });
+        
+        // Binary reconstruction endpoint - returns raw image bytes
+        server_.Post("/reconstruct/binary", [this](const httplib::Request& req, httplib::Response& res) {
+            try {
+                // Get raw image bytes from request body
+                std::vector<uchar> image_data(req.body.begin(), req.body.end());
+                cv::Mat img = cv::imdecode(image_data, cv::IMREAD_COLOR);
+                
+                if (img.empty()) {
+                    res.status = 400;
+                    res.set_content("Failed to decode image", "text/plain");
+                    return;
+                }
+                
+                // Get mask ratio from header or use default
+                float mask_ratio = 0.75f;
+                if (req.has_header("X-Mask-Ratio")) {
+                    mask_ratio = std::stof(req.get_header_value("X-Mask-Ratio"));
+                }
+                
+                // Run reconstruction
+                cv::Mat reconstructed = model_->reconstruct_image(img, mask_ratio);
+                
+                // Encode as PNG and return binary
+                std::vector<uchar> buf;
+                cv::imencode(".png", reconstructed, buf);
+                
+                res.set_content(reinterpret_cast<const char*>(buf.data()), buf.size(), "image/png");
+                
+            } catch (const std::exception& e) {
+                res.status = 500;
+                res.set_content(e.what(), "text/plain");
             }
         });
         

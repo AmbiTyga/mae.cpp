@@ -399,6 +399,73 @@ private:
             }
         });
         
+        // Multi-resolution reconstruction endpoint - NEW!
+        server_.Post("/reconstruct_multisize", [this](const httplib::Request& req, httplib::Response& res) {
+            try {
+                auto start = std::chrono::high_resolution_clock::now();
+                
+                // Parse JSON request
+                json request = json::parse(req.body);
+                
+                // Get image data
+                std::string image_base64 = request["image"];
+                float mask_ratio = request.value("mask_ratio", 0.75f);
+                int target_size = request.value("size", 224);  // Default 224, can be 448, 672, etc.
+                
+                // Validate size (must be divisible by patch size 16)
+                if (target_size % 16 != 0) {
+                    json error;
+                    error["error"] = "Size must be divisible by 16 (patch size)";
+                    res.status = 400;
+                    res.set_content(error.dump(), "application/json");
+                    return;
+                }
+                
+                // Decode base64 image
+                auto image_data = base64_decode(image_base64);
+                cv::Mat img = cv::imdecode(image_data, cv::IMREAD_COLOR);
+                
+                if (img.empty()) {
+                    json error;
+                    error["error"] = "Failed to decode image";
+                    res.status = 400;
+                    res.set_content(error.dump(), "application/json");
+                    return;
+                }
+                
+                // Resize to target size
+                cv::Mat img_resized;
+                cv::resize(img, img_resized, cv::Size(target_size, target_size));
+                
+                // Run reconstruction at the new size
+                cv::Mat reconstructed = model_->reconstruct_image(img_resized, mask_ratio);
+                
+                // Encode result
+                std::vector<uchar> buf;
+                cv::imencode(".png", reconstructed, buf);
+                std::string result_base64 = base64_encode(buf);
+                
+                auto end = std::chrono::high_resolution_clock::now();
+                auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+                
+                // Create response
+                json response;
+                response["reconstruction"] = result_base64;
+                response["mask_ratio"] = mask_ratio;
+                response["input_size"] = target_size;
+                response["num_patches"] = (target_size / 16) * (target_size / 16);
+                response["processing_time_ms"] = duration.count();
+                
+                res.set_content(response.dump(), "application/json");
+                
+            } catch (const std::exception& e) {
+                json error;
+                error["error"] = e.what();
+                res.status = 500;
+                res.set_content(error.dump(), "application/json");
+            }
+        });
+        
         // Batch reconstruction endpoint
         server_.Post("/reconstruct_batch", [this](const httplib::Request& req, httplib::Response& res) {
             try {

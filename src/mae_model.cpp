@@ -253,6 +253,52 @@ torch::Tensor MaskedAutoencoderViTImpl::unpatchify(const torch::Tensor& x) {
     return imgs;
 }
 
+torch::Tensor MaskedAutoencoderViTImpl::interpolate_pos_embed(const torch::Tensor& pos_embed, int new_h, int new_w) {
+    // pos_embed: (1, num_patches + 1, embed_dim)
+    // new_h, new_w: new height and width in patches
+    
+    int num_patches = pos_embed.size(1) - 1;  // subtract cls token
+    int embed_dim = pos_embed.size(2);
+    
+    // Calculate original size
+    int orig_h = static_cast<int>(std::sqrt(num_patches));
+    int orig_w = orig_h;
+    
+    if (orig_h == new_h && orig_w == new_w) {
+        return pos_embed;
+    }
+    
+    // Print interpolation info
+    std::cout << "Interpolating positional embeddings from " << orig_h << "x" << orig_w 
+              << " to " << new_h << "x" << new_w << std::endl;
+    
+    // Separate cls token and position tokens
+    auto cls_token = pos_embed.slice(1, 0, 1);  // (1, 1, embed_dim)
+    auto pos_tokens = pos_embed.slice(1, 1);    // (1, num_patches, embed_dim)
+    
+    // Reshape to 2D grid
+    pos_tokens = pos_tokens.reshape({1, orig_h, orig_w, embed_dim});
+    pos_tokens = pos_tokens.permute({0, 3, 1, 2});  // (1, embed_dim, h, w)
+    
+    // Interpolate using bicubic interpolation
+    pos_tokens = torch::nn::functional::interpolate(
+        pos_tokens,
+        torch::nn::functional::InterpolateFuncOptions()
+            .size(std::vector<int64_t>{new_h, new_w})
+            .mode(torch::kBicubic)
+            .align_corners(false)
+    );
+    
+    // Reshape back
+    pos_tokens = pos_tokens.permute({0, 2, 3, 1});  // (1, new_h, new_w, embed_dim)
+    pos_tokens = pos_tokens.flatten(1, 2);          // (1, new_h*new_w, embed_dim)
+    
+    // Concatenate cls token and interpolated position tokens
+    auto new_pos_embed = torch::cat({cls_token, pos_tokens}, 1);
+    
+    return new_pos_embed;
+}
+
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> MaskedAutoencoderViTImpl::random_masking(
     const torch::Tensor& x, double mask_ratio) {
     auto N = x.size(0);
@@ -280,14 +326,27 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> MaskedAutoencoderViTImpl
     // Embed patches
     auto x_embed = patch_embed(x);
     
+    // Check if we need to interpolate positional embeddings
+    int num_patches = x_embed.size(1);
+    int expected_patches = pos_embed.size(1) - 1;  // minus cls token
+    
+    torch::Tensor pos_embed_to_use = pos_embed;
+    if (num_patches != expected_patches) {
+        // Calculate new grid size
+        int new_h = static_cast<int>(std::sqrt(num_patches));
+        int new_w = new_h;
+        // Interpolate positional embeddings
+        pos_embed_to_use = interpolate_pos_embed(pos_embed, new_h, new_w);
+    }
+    
     // Add pos embed w/o cls token
-    x_embed = x_embed + pos_embed.slice(1, 1);
+    x_embed = x_embed + pos_embed_to_use.slice(1, 1);
     
     // Masking
     auto [x_masked, mask, ids_restore] = random_masking(x_embed, mask_ratio);
     
     // Append cls token
-    auto cls_tokens = cls_token + pos_embed.slice(1, 0, 1);
+    auto cls_tokens = cls_token + pos_embed_to_use.slice(1, 0, 1);
     cls_tokens = cls_tokens.expand({x_masked.size(0), -1, -1});
     x_masked = torch::cat({cls_tokens, x_masked}, 1);
     
@@ -310,8 +369,19 @@ torch::Tensor MaskedAutoencoderViTImpl::forward_decoder(const torch::Tensor& x, 
     x_ = torch::gather(x_, 1, ids_restore.unsqueeze(-1).repeat({1, 1, x_.size(2)}));
     x_decoded = torch::cat({x_decoded.slice(1, 0, 1), x_}, 1);
     
+    // Check if we need to interpolate decoder positional embeddings
+    int num_patches = x_decoded.size(1) - 1;  // minus cls token
+    int expected_patches = decoder_pos_embed.size(1) - 1;
+    
+    torch::Tensor decoder_pos_embed_to_use = decoder_pos_embed;
+    if (num_patches != expected_patches) {
+        int new_h = static_cast<int>(std::sqrt(num_patches));
+        int new_w = new_h;
+        decoder_pos_embed_to_use = interpolate_pos_embed(decoder_pos_embed, new_h, new_w);
+    }
+    
     // Add pos embed
-    x_decoded = x_decoded + decoder_pos_embed;
+    x_decoded = x_decoded + decoder_pos_embed_to_use;
     
     // Apply Transformer blocks
     for (const auto& blk : *decoder_blocks) {

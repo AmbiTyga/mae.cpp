@@ -150,6 +150,9 @@ class MaskedAutoencoderViTImpl : public torch::nn::Module{
         //Utility functions
         torch::Tensor patchify(const torch::Tensor& imgs);
         torch::Tensor unpatchify(const torch::Tensor& x);
+        
+        // New method for positional embedding interpolation
+        torch::Tensor interpolate_pos_embed(const torch::Tensor& pos_embed, int new_h, int new_w);
         std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> random_masking(
             const torch::Tensor& x,
             double mask_ratio

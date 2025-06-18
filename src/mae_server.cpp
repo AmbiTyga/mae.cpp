@@ -725,29 +725,12 @@ private:
                 // Convert back to BGR
                 cv::cvtColor(masked_img, masked_img, cv::COLOR_RGB2BGR);
                 
-                // Encode result
+                // Encode result as PNG
                 std::vector<uchar> buf;
                 cv::imencode(".png", masked_img, buf);
-                std::string masked_base64 = base64_encode(buf);
                 
-                // Convert mask to 2D array for response
-                std::vector<std::vector<float>> mask_array(num_patches, std::vector<float>(num_patches));
-                for (int i = 0; i < num_patches; i++) {
-                    for (int j = 0; j < num_patches; j++) {
-                        mask_array[i][j] = 1.0f - mask[i * num_patches + j].item().toFloat();
-                    }
-                }
-                
-                // Create response
-                json response;
-                response["masked_image"] = masked_base64;
-                response["mask"] = mask_array;
-                response["mask_ratio"] = mask_ratio;
-                response["num_masked_patches"] = total_patches - len_keep;
-                response["num_visible_patches"] = len_keep;
-                response["patch_size"] = patch_size;
-                
-                res.set_content(response.dump(), "application/json");
+                // Return binary PNG directly for multipart
+                res.set_content(reinterpret_cast<const char*>(buf.data()), buf.size(), "image/png");
                 
                 log_request("/mask_image/multipart", "POST", client_ip, "SUCCESS", 
                            "mask_ratio=" + std::to_string(mask_ratio));
@@ -1045,19 +1028,12 @@ private:
                     }
                 }
                 
-                // Encode result
+                // Encode result as PNG
                 std::vector<uchar> buf;
                 cv::imencode(".png", img_resized, buf);
-                std::string result_base64 = base64_encode(buf);
                 
-                // Create response
-                json response;
-                response["patched_image"] = result_base64;
-                response["patch_size"] = patch_size;
-                response["num_patches_per_side"] = num_patches;
-                response["total_patches"] = num_patches * num_patches;
-                
-                res.set_content(response.dump(), "application/json");
+                // Return binary PNG directly for multipart
+                res.set_content(reinterpret_cast<const char*>(buf.data()), buf.size(), "image/png");
                 
                 log_request("/visualize_patches/multipart", "POST", client_ip, "SUCCESS", 
                            "show_numbers=" + std::to_string(show_numbers));
@@ -1316,23 +1292,15 @@ private:
                 auto reconstructed_tensor = model_->unpatchify(pred);
                 cv::Mat reconstructed = tensor_to_image_multisize(reconstructed_tensor, target_size);
                 
-                // Encode result
+                // Encode result as PNG
                 std::vector<uchar> buf;
                 cv::imencode(".png", reconstructed, buf);
-                std::string result_base64 = base64_encode(buf);
+                
+                // Return binary PNG directly for multipart
+                res.set_content(reinterpret_cast<const char*>(buf.data()), buf.size(), "image/png");
                 
                 auto end = std::chrono::high_resolution_clock::now();
                 auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-                
-                // Create response
-                json response;
-                response["reconstruction"] = result_base64;
-                response["mask_ratio"] = mask_ratio;
-                response["input_size"] = target_size;
-                response["num_patches"] = (target_size / 16) * (target_size / 16);
-                response["processing_time_ms"] = duration.count();
-                
-                res.set_content(response.dump(), "application/json");
                 
                 log_request("/reconstruct_multisize/multipart", "POST", client_ip, "SUCCESS", 
                            file.filename + ", size=" + std::to_string(target_size) + 

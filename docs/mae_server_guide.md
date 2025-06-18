@@ -93,12 +93,12 @@ Send base64 encoded image in JSON.
 
 ### 6. Mask Image
 - Binary: POST /mask_image/binary - Send raw image bytes, returns PNG image
-- Multipart: POST /mask_image/multipart - Send as form data, returns JSON with base64
+- Multipart: POST /mask_image/multipart - Send as form data, returns PNG image
 - JSON: POST /mask_image - Base64 encoded image (for compatibility)
 
 ### 7. Visualize Patches
 - Binary: POST /visualize_patches/binary - Send raw image bytes, returns PNG image
-- Multipart: POST /visualize_patches/multipart - Send as form data, returns JSON with base64
+- Multipart: POST /visualize_patches/multipart - Send as form data, returns PNG image
 - JSON: POST /visualize_patches - Base64 encoded image (for compatibility)
 
 ### 8. Multi-resolution Reconstruction
@@ -294,23 +294,17 @@ wget --post-file=image.jpg \
 
 **cURL:**
 ```bash
-# Create masked visualization with multipart
+# Create masked visualization with multipart - returns PNG directly
 curl -X POST http://localhost:8080/mask_image/multipart \
   -F "image=@image.jpg" \
   -F "mask_ratio=0.75" \
-  --output mask_response.json
+  --output masked.png
 
-# Extract the masked image
+# Different mask ratios
 curl -X POST http://localhost:8080/mask_image/multipart \
   -F "image=@image.jpg" \
-  -F "mask_ratio=0.75" | \
-  jq -r '.masked_image' | base64 -d > masked.png
-
-# Get mask statistics
-curl -X POST http://localhost:8080/mask_image/multipart \
-  -F "image=@image.jpg" \
-  -F "mask_ratio=0.75" | \
-  jq '.num_masked_patches, .num_visible_patches'
+  -F "mask_ratio=0.5" \
+  --output masked_50.png
 ```
 
 **wget:**
@@ -332,7 +326,7 @@ EOF
 # Send request
 wget --post-file=mask_form.txt \
      --header="Content-Type: multipart/form-data; boundary=boundary" \
-     -O mask_response.json \
+     -O masked.png \
      http://localhost:8080/mask_image/multipart
 ```
 
@@ -385,17 +379,17 @@ wget --post-file=image.jpg \
 
 **cURL:**
 ```bash
-# Show patch grid with multipart
+# Show patch grid with multipart - returns PNG directly
 curl -X POST http://localhost:8080/visualize_patches/multipart \
   -F "image=@image.jpg" \
   -F "show_numbers=true" \
-  --output patches_response.json
+  --output patches.png
 
-# Extract the image
+# Without numbers
 curl -X POST http://localhost:8080/visualize_patches/multipart \
   -F "image=@image.jpg" \
-  -F "show_numbers=true" | \
-  jq -r '.patched_image' | base64 -d > patches.png
+  -F "show_numbers=false" \
+  --output patches_plain.png
 ```
 
 **wget:**
@@ -417,7 +411,7 @@ EOF
 # Send request
 wget --post-file=patches_form.txt \
      --header="Content-Type: multipart/form-data; boundary=boundary" \
-     -O patches_response.json \
+     -O patches.png \
      http://localhost:8080/visualize_patches/multipart
 ```
 
@@ -488,14 +482,14 @@ curl -X POST http://localhost:8080/reconstruct_multisize/multipart \
   -F "image=@image.jpg" \
   -F "mask_ratio=0.75" \
   -F "size=448" \
-  --output response.json
+  --output reconstructed_448.png
 
-# Extract result
+# Different sizes
 curl -X POST http://localhost:8080/reconstruct_multisize/multipart \
   -F "image=@image.jpg" \
   -F "mask_ratio=0.75" \
-  -F "size=448" | \
-  jq -r '.reconstruction' | base64 -d > reconstructed_448.png
+  -F "size=672" \
+  --output reconstructed_672.png
 ```
 
 **wget:**
@@ -522,7 +516,7 @@ EOF
 # Send request
 wget --post-file=multisize_form.txt \
      --header="Content-Type: multipart/form-data; boundary=boundary" \
-     -O response.json \
+     -O reconstructed_448.png \
      http://localhost:8080/reconstruct_multisize/multipart
 ```
 

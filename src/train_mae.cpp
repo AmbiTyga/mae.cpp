@@ -2,9 +2,51 @@
 #include "data_loader.hpp"
 #include <torch/torch.h>
 #include <iostream>
+#include <fstream>
+#include <sstream>
 #include <chrono>
 #include <iomanip>
 #include <filesystem>
+
+// Simple logger class for dual output
+class DualLogger {
+public:
+    DualLogger(const std::string& filename) {
+        log_file_.open(filename, std::ios::app);
+        if (!log_file_.is_open()) {
+            std::cerr << "Warning: Could not open log file " << filename << std::endl;
+        }
+    }
+    
+    ~DualLogger() {
+        if (log_file_.is_open()) {
+            log_file_.close();
+        }
+    }
+    
+    template<typename T>
+    DualLogger& operator<<(const T& value) {
+        std::cout << value;
+        if (log_file_.is_open()) {
+            log_file_ << value;
+            log_file_.flush();  // Ensure immediate write
+        }
+        return *this;
+    }
+    
+    // Handle std::endl
+    DualLogger& operator<<(std::ostream& (*pf)(std::ostream&)) {
+        std::cout << pf;
+        if (log_file_.is_open()) {
+            log_file_ << pf;
+            log_file_.flush();
+        }
+        return *this;
+    }
+    
+private:
+    std::ofstream log_file_;
+};
 
 // Training configuration
 struct TrainingConfig {
@@ -85,7 +127,8 @@ void save_checkpoint(const MaskedAutoencoderViT& model,
                     const torch::optim::Optimizer& optimizer,
                     int64_t epoch,
                     double loss,
-                    const std::string& filepath) {
+                    const std::string& filepath,
+                    DualLogger& logger) {
     torch::serialize::OutputArchive archive;
     model->save(archive);
     
@@ -99,13 +142,14 @@ void save_checkpoint(const MaskedAutoencoderViT& model,
     archive.write("loss", torch::tensor(loss));
     
     archive.save_to(filepath);
-    std::cout << "Saved checkpoint to " << filepath << std::endl;
+    logger << "Saved checkpoint to " << filepath << std::endl;
 }
 
 // Utility function to export model as TorchScript
 void export_torchscript(MaskedAutoencoderViT& model,
                        const std::string& filepath,
-                       const TrainingConfig& config) {
+                       const TrainingConfig& config,
+                       DualLogger& logger) {
     model->eval();
     
     // Note: torch::jit::trace is not available in LibTorch C++ API
@@ -114,8 +158,8 @@ void export_torchscript(MaskedAutoencoderViT& model,
     model->save(archive);
     archive.save_to(filepath);
     
-    std::cout << "Exported model state to " << filepath << std::endl;
-    std::cout << "Note: To create TorchScript, load this in Python and use torch.jit.trace" << std::endl;
+    logger << "Exported model state to " << filepath << std::endl;
+    logger << "Note: To create TorchScript, load this in Python and use torch.jit.trace" << std::endl;
 }
 
 // Utility function to load checkpoint
@@ -151,7 +195,8 @@ void train_epoch(MaskedAutoencoderViT& model,
                 DataLoader& data_loader,
                 torch::optim::Optimizer& optimizer,
                 const TrainingConfig& config,
-                int64_t epoch) {
+                int64_t epoch,
+                DualLogger& logger) {
     model->train();
     
     double total_loss = 0.0;
@@ -184,9 +229,9 @@ void train_epoch(MaskedAutoencoderViT& model,
             auto current_time = std::chrono::high_resolution_clock::now();
             auto duration = std::chrono::duration_cast<std::chrono::seconds>(current_time - start_time);
             
-            std::cout << "Epoch [" << epoch << "] Batch [" << batch_count << "] "
-                     << "Loss: " << std::fixed << std::setprecision(4) << loss.item().toDouble() 
-                     << " Time: " << duration.count() << "s" << std::endl;
+            logger << "Epoch [" << epoch << "] Batch [" << batch_count << "] "
+                   << "Loss: " << std::fixed << std::setprecision(4) << loss.item().toDouble() 
+                   << " Time: " << duration.count() << "s" << std::endl;
         }
     }
     
@@ -194,9 +239,10 @@ void train_epoch(MaskedAutoencoderViT& model,
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::minutes>(end_time - start_time);
     
-    std::cout << "Epoch [" << epoch << "] completed - "
-              << "Average Loss: " << std::fixed << std::setprecision(4) << avg_loss
-              << " Time: " << duration.count() << " minutes" << std::endl;
+    logger << "Epoch [" << epoch << "] completed - "
+           << "Average Loss: " << std::fixed << std::setprecision(4) << avg_loss
+           << " Time: " << duration.count() << " minutes" << std::endl;
+    logger << "----------------------------------------" << std::endl;
 }
 
 int main(int argc, char* argv[]) {
@@ -213,15 +259,22 @@ int main(int argc, char* argv[]) {
         config.epochs = std::stoi(argv[3]);
     }
     
-    std::cout << "MAE Training Configuration:" << std::endl;
-    std::cout << "  Model: " << config.model_type << std::endl;
-    std::cout << "  Device: " << config.device << std::endl;
-    std::cout << "  Batch size: " << config.batch_size << std::endl;
-    std::cout << "  Epochs: " << config.epochs << std::endl;
-    std::cout << "  Learning rate: " << config.learning_rate << std::endl;
-    std::cout << "  Mask ratio: " << config.mask_ratio << std::endl;
-    std::cout << "  Data path: " << config.data_path << std::endl;
-    std::cout << std::endl;
+    // Create logger with timestamp
+    auto now = std::chrono::system_clock::now();
+    auto time_t = std::chrono::system_clock::to_time_t(now);
+    std::stringstream log_filename;
+    log_filename << "mae_training_" << std::put_time(std::localtime(&time_t), "%Y%m%d_%H%M%S") << ".log";
+    DualLogger logger(log_filename.str());
+    
+    logger << "MAE Training Configuration:" << std::endl;
+    logger << "  Model: " << config.model_type << std::endl;
+    logger << "  Device: " << config.device << std::endl;
+    logger << "  Batch size: " << config.batch_size << std::endl;
+    logger << "  Epochs: " << config.epochs << std::endl;
+    logger << "  Learning rate: " << config.learning_rate << std::endl;
+    logger << "  Mask ratio: " << config.mask_ratio << std::endl;
+    logger << "  Data path: " << config.data_path << std::endl;
+    logger << std::endl;
     
     // Create model
     MaskedAutoencoderViT model;
@@ -244,7 +297,7 @@ int main(int argc, char* argv[]) {
     for (const auto& p : model->parameters()) {
         param_count += p.numel();
     }
-    std::cout << "Model parameters: " << param_count / 1e6 << "M" << std::endl;
+    logger << "Model parameters: " << param_count / 1e6 << "M" << std::endl;
     
     // Create dataset and dataloader
     auto dataset = ImageFolderDataset(config.data_path, config.img_size)
@@ -276,34 +329,36 @@ int main(int argc, char* argv[]) {
     // Try to load checkpoint
     int64_t start_epoch = 0;
     std::string checkpoint_path = config.checkpoint_dir + "/mae_latest.pt";
-    load_checkpoint(model, optimizer, start_epoch, checkpoint_path);
+    if (load_checkpoint(model, optimizer, start_epoch, checkpoint_path)) {
+        logger << "Resumed from epoch " << start_epoch << std::endl;
+    }
     
     // Training loop
     for (int64_t epoch = start_epoch; epoch < config.epochs; ++epoch) {
         // Update learning rate
         scheduler.step(epoch);
-        std::cout << "\nEpoch " << epoch << " - Learning rate: " 
-                  << scheduler.get_lr() << std::endl;
+        logger << "\nEpoch " << epoch << " - Learning rate: " 
+               << scheduler.get_lr() << std::endl;
         
         // Train for one epoch
-        train_epoch(model, data_loader, optimizer, config, epoch);
+        train_epoch(model, data_loader, optimizer, config, epoch, logger);
         
         // Save checkpoint
         if ((epoch + 1) % config.save_freq == 0 || epoch == config.epochs - 1) {
             std::string epoch_checkpoint = config.checkpoint_dir + "/mae_epoch_" + 
                                          std::to_string(epoch) + ".pt";
-            save_checkpoint(model, optimizer, epoch, 0.0, epoch_checkpoint);
+            save_checkpoint(model, optimizer, epoch, 0.0, epoch_checkpoint, logger);
             
             // Also save as latest
-            save_checkpoint(model, optimizer, epoch, 0.0, checkpoint_path);
+            save_checkpoint(model, optimizer, epoch, 0.0, checkpoint_path, logger);
         }
     }
     
-    std::cout << "\nTraining completed!" << std::endl;
+    logger << "\nTraining completed!" << std::endl;
     
     // Export final model as TorchScript for inference
     std::string torchscript_path = config.checkpoint_dir + "/mae_model.pt";
-    export_torchscript(model, torchscript_path, config);
+    export_torchscript(model, torchscript_path, config, logger);
     
     return 0;
 }

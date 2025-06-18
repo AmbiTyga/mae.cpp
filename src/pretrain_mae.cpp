@@ -9,6 +9,8 @@
 #include <iomanip>
 #include <filesystem>
 #include <nlohmann/json.hpp>
+#include <cstdlib>
+#include <cmath>
 
 using json = nlohmann::json;
 
@@ -34,7 +36,7 @@ public:
         std::cout << value;
         if (log_file_.is_open()) {
             log_file_ << value;
-            log_file_.flush();
+            // Don't flush on every write - only on newline
         }
         return *this;
     }
@@ -238,24 +240,44 @@ void train_one_epoch(MaskedAutoencoderViT& model,
         // Move data to device
         auto images = batch.data.to(config.device);
         
-        // Forward pass
+        // Zero gradients from previous iteration
         optimizer.zero_grad();
+        
+        // Forward pass - compute loss with autograd enabled
         auto [loss, pred, mask] = model->forward(images, config.mask_ratio);
         
-        // Backward pass
+        // Backward pass - compute gradients
         loss.backward();
         
-        // Gradient clipping
+        // Gradient clipping for stability
         torch::nn::utils::clip_grad_norm_(model->parameters(), config.gradient_clip);
         
-        // Optimizer step
+        // Update parameters using computed gradients
         optimizer.step();
+        
+        // Clear intermediate tensors to save memory (gradients are already applied)
+        pred = torch::Tensor();
+        mask = torch::Tensor();
+        
+        // Synchronize CUDA if using GPU
+        if (config.device.type() == torch::kCUDA) {
+            torch::cuda::synchronize();
+        }
         
         auto iter_time = std::chrono::duration<double>(
             std::chrono::high_resolution_clock::now() - iter_start).count();
         
         // Update metrics
         double loss_value = loss.item().toDouble();
+        
+        // Verify loss is valid
+        if (std::isnan(loss_value) || std::isinf(loss_value)) {
+            logger << "WARNING: Invalid loss detected: " << loss_value 
+                   << " at step " << global_step << std::endl;
+            logger << "Skipping this iteration..." << std::endl;
+            continue;
+        }
+        
         metric_logger.update("loss", loss_value);
         metric_logger.update("lr", lr);
         metric_logger.update("data_time", data_time);
@@ -284,6 +306,25 @@ void train_one_epoch(MaskedAutoencoderViT& model,
                    << "data: " << std::fixed << std::setprecision(3) << data_time << "  "
                    << "speed: " << std::fixed << std::setprecision(0) << samples_per_sec << " samples/s"
                    << std::endl;
+            
+            // Periodically check gradient norms for debugging
+            if (batch_idx % (config.print_freq * 5) == 0 && batch_idx > 0) {
+                double total_grad_norm = 0.0;
+                for (const auto& p : model->parameters()) {
+                    if (p.grad().defined()) {
+                        auto grad_norm = p.grad().norm(2).item().toDouble();
+                        total_grad_norm += grad_norm * grad_norm;
+                    }
+                }
+                total_grad_norm = std::sqrt(total_grad_norm);
+                logger << "  Gradient norm: " << std::fixed << std::setprecision(4) 
+                       << total_grad_norm << std::endl;
+            }
+            
+            // Periodically clear CUDA cache to prevent memory fragmentation
+            if (config.device.type() == torch::kCUDA && batch_idx % (config.print_freq * 10) == 0) {
+                torch::cuda::empty_cache();
+            }
         }
         
         data_start = std::chrono::high_resolution_clock::now();
@@ -305,6 +346,14 @@ int main(int argc, char* argv[]) {
         std::cerr << "Example: " << argv[0] << " configs/mae_pretrain_vit_base.json" << std::endl;
         return 1;
     }
+    
+    // Set environment variables for better performance
+    setenv("OMP_NUM_THREADS", "1", 1);  // Prevent OpenMP from spawning too many threads
+    setenv("MKL_NUM_THREADS", "1", 1);  // Control MKL threads
+    
+    // Set PyTorch inter-op threads
+    torch::set_num_threads(1);
+    torch::set_num_interop_threads(1);
     
     // Load configuration
     PretrainConfig config;

@@ -38,7 +38,6 @@ PretrainConfig PretrainConfig::from_json(const std::string& config_path) {
     config.data_path = j["data"]["data_path"];
     config.input_size = j["data"]["input_size"];
     config.num_workers = j["data"]["num_workers"];
-    config.pin_memory = j["data"]["pin_memory"];
     
     // Augmentation config
     auto scale = j["data"]["augmentation"]["random_resized_crop"]["scale"];

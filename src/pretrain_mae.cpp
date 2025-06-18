@@ -317,7 +317,6 @@ int main(int argc, char* argv[]) {
         torch::data::DataLoaderOptions()
             .batch_size(config.batch_size)
             .workers(config.num_workers)
-            .pin_memory(config.pin_memory)
             .drop_last(true)
     );
     

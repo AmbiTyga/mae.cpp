@@ -42,7 +42,6 @@ struct PretrainConfig {
     std::string data_path;
     int64_t input_size;
     int64_t num_workers;
-    bool pin_memory;
     
     // Augmentation config
     std::array<float, 2> crop_scale;
@@ -115,66 +114,8 @@ private:
     double min_lr_;
 };
 
-// Data augmentation transforms
-class RandomResizedCrop : public torch::data::transforms::TensorTransform<cv::Mat> {
-public:
-    RandomResizedCrop(int size, std::array<float, 2> scale, int interpolation = cv::INTER_CUBIC)
-        : size_(size), scale_(scale), interpolation_(interpolation) {
-        std::random_device rd;
-        gen_ = std::mt19937(rd());
-        scale_dist_ = std::uniform_real_distribution<float>(scale[0], scale[1]);
-        aspect_dist_ = std::uniform_real_distribution<float>(3.0/4.0, 4.0/3.0);
-    }
-    
-    torch::Tensor operator()(cv::Mat input) override {
-        int height = input.rows;
-        int width = input.cols;
-        
-        // Get random scale and aspect ratio
-        float scale = scale_dist_(gen_);
-        float aspect_ratio = aspect_dist_(gen_);
-        
-        // Calculate crop size
-        float area = height * width * scale;
-        int crop_width = static_cast<int>(std::sqrt(area * aspect_ratio));
-        int crop_height = static_cast<int>(std::sqrt(area / aspect_ratio));
-        
-        // Ensure crop is within bounds
-        crop_width = std::min(crop_width, width);
-        crop_height = std::min(crop_height, height);
-        
-        // Random crop position
-        std::uniform_int_distribution<int> x_dist(0, width - crop_width);
-        std::uniform_int_distribution<int> y_dist(0, height - crop_height);
-        int x = x_dist(gen_);
-        int y = y_dist(gen_);
-        
-        // Crop and resize
-        cv::Mat cropped = input(cv::Rect(x, y, crop_width, crop_height));
-        cv::Mat resized;
-        cv::resize(cropped, resized, cv::Size(size_, size_), 0, 0, interpolation_);
-        
-        // Convert to tensor
-        cv::Mat float_img;
-        resized.convertTo(float_img, CV_32FC3, 1.0/255.0);
-        
-        torch::Tensor tensor = torch::from_blob(
-            float_img.data,
-            {size_, size_, 3},
-            torch::kFloat32
-        ).clone().permute({2, 0, 1});  // HWC to CHW
-        
-        return tensor;
-    }
-    
-private:
-    int size_;
-    std::array<float, 2> scale_;
-    int interpolation_;
-    std::mt19937 gen_;
-    std::uniform_real_distribution<float> scale_dist_;
-    std::uniform_real_distribution<float> aspect_dist_;
-};
+// Note: RandomResizedCrop is already defined in data_loader.hpp
+// We'll use that implementation
 
 // Metric logger for training statistics
 class MetricLogger {

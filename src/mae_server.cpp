@@ -515,7 +515,254 @@ private:
             }
         });
         
-        // Mask image endpoint - creates a masked version of the image
+        // Mask image endpoint - Binary
+        server_.Post("/mask_image/binary", [this](const httplib::Request& req, httplib::Response& res) {
+            std::string client_ip = req.remote_addr;
+            if (client_ip.empty()) client_ip = "unknown";
+            
+            try {
+                // Check for empty body
+                if (req.body.empty()) {
+                    res.status = 400;
+                    res.set_content("Empty request body", "text/plain");
+                    log_request("/mask_image/binary", "POST", client_ip, "ERROR", "Empty request body");
+                    return;
+                }
+                
+                // Get mask ratio from header
+                float mask_ratio = 0.75f;
+                if (req.has_header("X-Mask-Ratio")) {
+                    mask_ratio = std::stof(req.get_header_value("X-Mask-Ratio"));
+                }
+                
+                // Validate mask ratio
+                if (mask_ratio < 0.0f || mask_ratio > 1.0f) {
+                    res.status = 400;
+                    res.set_content("Invalid mask_ratio. Must be between 0.0 and 1.0", "text/plain");
+                    return;
+                }
+                
+                // Decode image
+                std::vector<uchar> image_data(req.body.begin(), req.body.end());
+                cv::Mat img = cv::imdecode(image_data, cv::IMREAD_COLOR);
+                
+                if (img.empty()) {
+                    res.status = 400;
+                    res.set_content("Failed to decode image", "text/plain");
+                    log_request("/mask_image/binary", "POST", client_ip, "ERROR", "Failed to decode image");
+                    return;
+                }
+                
+                // Resize image to 224x224
+                cv::Mat img_resized;
+                cv::resize(img, img_resized, cv::Size(224, 224));
+                
+                // Convert to RGB
+                cv::cvtColor(img_resized, img_resized, cv::COLOR_BGR2RGB);
+                
+                // Create mask pattern
+                int patch_size = 16;
+                int num_patches = 14; // 224/16 = 14
+                int total_patches = num_patches * num_patches;
+                
+                // Generate random mask
+                torch::manual_seed(42); // Use fixed seed for reproducibility
+                auto noise = torch::rand({total_patches});
+                auto ids_shuffle = torch::argsort(noise, 0, /*descending=*/false);
+                auto ids_restore = torch::argsort(ids_shuffle, 0, /*descending=*/false);
+                
+                int len_keep = static_cast<int>(total_patches * (1 - mask_ratio));
+                
+                // Create binary mask: 0 is keep, 1 is remove
+                auto mask = torch::ones({total_patches});
+                mask.index_put_({torch::indexing::Slice(0, len_keep)}, 0);
+                mask = torch::gather(mask, 0, ids_restore);
+                
+                // Apply mask to image visualization
+                cv::Mat masked_img = img_resized.clone();
+                
+                for (int i = 0; i < num_patches; i++) {
+                    for (int j = 0; j < num_patches; j++) {
+                        int patch_idx = i * num_patches + j;
+                        if (mask[patch_idx].item().toFloat() == 1.0f) {
+                            // This patch is masked - fill with gray
+                            cv::rectangle(masked_img, 
+                                        cv::Point(j * patch_size, i * patch_size),
+                                        cv::Point((j + 1) * patch_size, (i + 1) * patch_size),
+                                        cv::Scalar(128, 128, 128), -1);
+                        }
+                    }
+                }
+                
+                // Add grid lines for better visualization
+                for (int i = 0; i <= num_patches; i++) {
+                    cv::line(masked_img, 
+                            cv::Point(0, i * patch_size), 
+                            cv::Point(224, i * patch_size), 
+                            cv::Scalar(200, 200, 200), 1);
+                    cv::line(masked_img, 
+                            cv::Point(i * patch_size, 0), 
+                            cv::Point(i * patch_size, 224), 
+                            cv::Scalar(200, 200, 200), 1);
+                }
+                
+                // Convert back to BGR
+                cv::cvtColor(masked_img, masked_img, cv::COLOR_RGB2BGR);
+                
+                // Encode result as PNG
+                std::vector<uchar> buf;
+                cv::imencode(".png", masked_img, buf);
+                
+                res.set_content(reinterpret_cast<const char*>(buf.data()), buf.size(), "image/png");
+                
+                log_request("/mask_image/binary", "POST", client_ip, "SUCCESS", 
+                           "mask_ratio=" + std::to_string(mask_ratio));
+                
+            } catch (const std::exception& e) {
+                res.status = 500;
+                res.set_content(e.what(), "text/plain");
+                log_request("/mask_image/binary", "POST", client_ip, "ERROR", 
+                           std::string("Exception: ") + e.what());
+            }
+        });
+        
+        // Mask image endpoint - Multipart
+        server_.Post("/mask_image/multipart", [this](const httplib::Request& req, httplib::Response& res) {
+            std::string client_ip = req.remote_addr;
+            if (client_ip.empty()) client_ip = "unknown";
+            
+            try {
+                if (!req.has_file("image")) {
+                    json error;
+                    error["error"] = "No image file in multipart request";
+                    res.status = 400;
+                    res.set_content(error.dump(), "application/json");
+                    log_request("/mask_image/multipart", "POST", client_ip, "ERROR", "No image file");
+                    return;
+                }
+                
+                const auto& file = req.get_file_value("image");
+                
+                float mask_ratio = 0.75f;
+                if (req.has_param("mask_ratio")) {
+                    mask_ratio = std::stof(req.get_param_value("mask_ratio"));
+                }
+                
+                // Validate mask ratio
+                if (mask_ratio < 0.0f || mask_ratio > 1.0f) {
+                    json error;
+                    error["error"] = "Invalid mask_ratio. Must be between 0.0 and 1.0";
+                    res.status = 400;
+                    res.set_content(error.dump(), "application/json");
+                    return;
+                }
+                
+                // Decode image
+                std::vector<uchar> image_data(file.content.begin(), file.content.end());
+                cv::Mat img = cv::imdecode(image_data, cv::IMREAD_COLOR);
+                
+                if (img.empty()) {
+                    json error;
+                    error["error"] = "Failed to decode image";
+                    res.status = 400;
+                    res.set_content(error.dump(), "application/json");
+                    return;
+                }
+                
+                // Resize image to 224x224
+                cv::Mat img_resized;
+                cv::resize(img, img_resized, cv::Size(224, 224));
+                
+                // Convert to RGB
+                cv::cvtColor(img_resized, img_resized, cv::COLOR_BGR2RGB);
+                
+                // Create mask pattern
+                int patch_size = 16;
+                int num_patches = 14; // 224/16 = 14
+                int total_patches = num_patches * num_patches;
+                
+                // Generate random mask
+                torch::manual_seed(42); // Use fixed seed for reproducibility
+                auto noise = torch::rand({total_patches});
+                auto ids_shuffle = torch::argsort(noise, 0, /*descending=*/false);
+                auto ids_restore = torch::argsort(ids_shuffle, 0, /*descending=*/false);
+                
+                int len_keep = static_cast<int>(total_patches * (1 - mask_ratio));
+                
+                // Create binary mask: 0 is keep, 1 is remove
+                auto mask = torch::ones({total_patches});
+                mask.index_put_({torch::indexing::Slice(0, len_keep)}, 0);
+                mask = torch::gather(mask, 0, ids_restore);
+                
+                // Apply mask to image visualization
+                cv::Mat masked_img = img_resized.clone();
+                
+                for (int i = 0; i < num_patches; i++) {
+                    for (int j = 0; j < num_patches; j++) {
+                        int patch_idx = i * num_patches + j;
+                        if (mask[patch_idx].item().toFloat() == 1.0f) {
+                            // This patch is masked - fill with gray
+                            cv::rectangle(masked_img, 
+                                        cv::Point(j * patch_size, i * patch_size),
+                                        cv::Point((j + 1) * patch_size, (i + 1) * patch_size),
+                                        cv::Scalar(128, 128, 128), -1);
+                        }
+                    }
+                }
+                
+                // Add grid lines for better visualization
+                for (int i = 0; i <= num_patches; i++) {
+                    cv::line(masked_img, 
+                            cv::Point(0, i * patch_size), 
+                            cv::Point(224, i * patch_size), 
+                            cv::Scalar(200, 200, 200), 1);
+                    cv::line(masked_img, 
+                            cv::Point(i * patch_size, 0), 
+                            cv::Point(i * patch_size, 224), 
+                            cv::Scalar(200, 200, 200), 1);
+                }
+                
+                // Convert back to BGR
+                cv::cvtColor(masked_img, masked_img, cv::COLOR_RGB2BGR);
+                
+                // Encode result
+                std::vector<uchar> buf;
+                cv::imencode(".png", masked_img, buf);
+                std::string masked_base64 = base64_encode(buf);
+                
+                // Convert mask to 2D array for response
+                std::vector<std::vector<float>> mask_array(num_patches, std::vector<float>(num_patches));
+                for (int i = 0; i < num_patches; i++) {
+                    for (int j = 0; j < num_patches; j++) {
+                        mask_array[i][j] = 1.0f - mask[i * num_patches + j].item().toFloat();
+                    }
+                }
+                
+                // Create response
+                json response;
+                response["masked_image"] = masked_base64;
+                response["mask"] = mask_array;
+                response["mask_ratio"] = mask_ratio;
+                response["num_masked_patches"] = total_patches - len_keep;
+                response["num_visible_patches"] = len_keep;
+                response["patch_size"] = patch_size;
+                
+                res.set_content(response.dump(), "application/json");
+                
+                log_request("/mask_image/multipart", "POST", client_ip, "SUCCESS", 
+                           "mask_ratio=" + std::to_string(mask_ratio));
+                
+            } catch (const std::exception& e) {
+                json error;
+                error["error"] = e.what();
+                res.status = 500;
+                res.set_content(error.dump(), "application/json");
+                log_request("/mask_image/multipart", "POST", client_ip, "ERROR", 
+                           std::string("Exception: ") + e.what());
+            }
+        });
+        
+        // Mask image endpoint - creates a masked version of the image (JSON/base64 for compatibility)
         server_.Post("/mask_image", [this](const httplib::Request& req, httplib::Response& res) {
             std::string client_ip = req.remote_addr;
             if (client_ip.empty()) client_ip = "unknown";
@@ -642,7 +889,190 @@ private:
             }
         });
         
-        // Visualize patches endpoint - shows how the image is divided into patches
+        // Visualize patches endpoint - Binary
+        server_.Post("/visualize_patches/binary", [this](const httplib::Request& req, httplib::Response& res) {
+            std::string client_ip = req.remote_addr;
+            if (client_ip.empty()) client_ip = "unknown";
+            
+            try {
+                // Check for empty body
+                if (req.body.empty()) {
+                    res.status = 400;
+                    res.set_content("Empty request body", "text/plain");
+                    log_request("/visualize_patches/binary", "POST", client_ip, "ERROR", "Empty request body");
+                    return;
+                }
+                
+                // Get show_numbers from header
+                bool show_numbers = true;
+                if (req.has_header("X-Show-Numbers")) {
+                    std::string show_str = req.get_header_value("X-Show-Numbers");
+                    show_numbers = (show_str == "true" || show_str == "1");
+                }
+                
+                // Decode image
+                std::vector<uchar> image_data(req.body.begin(), req.body.end());
+                cv::Mat img = cv::imdecode(image_data, cv::IMREAD_COLOR);
+                
+                if (img.empty()) {
+                    res.status = 400;
+                    res.set_content("Failed to decode image", "text/plain");
+                    log_request("/visualize_patches/binary", "POST", client_ip, "ERROR", "Failed to decode image");
+                    return;
+                }
+                
+                // Resize image to 224x224
+                cv::Mat img_resized;
+                cv::resize(img, img_resized, cv::Size(224, 224));
+                
+                // Draw patch grid
+                int patch_size = 16;
+                int num_patches = 14; // 224/16 = 14
+                
+                // Draw grid lines
+                for (int i = 0; i <= num_patches; i++) {
+                    cv::line(img_resized, 
+                            cv::Point(0, i * patch_size), 
+                            cv::Point(224, i * patch_size), 
+                            cv::Scalar(0, 255, 0), 2);
+                    cv::line(img_resized, 
+                            cv::Point(i * patch_size, 0), 
+                            cv::Point(i * patch_size, 224), 
+                            cv::Scalar(0, 255, 0), 2);
+                }
+                
+                // Optionally add patch numbers
+                if (show_numbers) {
+                    for (int i = 0; i < num_patches; i++) {
+                        for (int j = 0; j < num_patches; j++) {
+                            int patch_idx = i * num_patches + j;
+                            cv::putText(img_resized, 
+                                      std::to_string(patch_idx),
+                                      cv::Point(j * patch_size + 2, i * patch_size + 14),
+                                      cv::FONT_HERSHEY_SIMPLEX, 
+                                      0.3, 
+                                      cv::Scalar(255, 255, 255), 
+                                      1);
+                        }
+                    }
+                }
+                
+                // Encode result as PNG
+                std::vector<uchar> buf;
+                cv::imencode(".png", img_resized, buf);
+                
+                res.set_content(reinterpret_cast<const char*>(buf.data()), buf.size(), "image/png");
+                
+                log_request("/visualize_patches/binary", "POST", client_ip, "SUCCESS", 
+                           "show_numbers=" + std::to_string(show_numbers));
+                
+            } catch (const std::exception& e) {
+                res.status = 500;
+                res.set_content(e.what(), "text/plain");
+                log_request("/visualize_patches/binary", "POST", client_ip, "ERROR", 
+                           std::string("Exception: ") + e.what());
+            }
+        });
+        
+        // Visualize patches endpoint - Multipart
+        server_.Post("/visualize_patches/multipart", [this](const httplib::Request& req, httplib::Response& res) {
+            std::string client_ip = req.remote_addr;
+            if (client_ip.empty()) client_ip = "unknown";
+            
+            try {
+                if (!req.has_file("image")) {
+                    json error;
+                    error["error"] = "No image file in multipart request";
+                    res.status = 400;
+                    res.set_content(error.dump(), "application/json");
+                    log_request("/visualize_patches/multipart", "POST", client_ip, "ERROR", "No image file");
+                    return;
+                }
+                
+                const auto& file = req.get_file_value("image");
+                
+                bool show_numbers = true;
+                if (req.has_param("show_numbers")) {
+                    std::string show_str = req.get_param_value("show_numbers");
+                    show_numbers = (show_str == "true" || show_str == "1");
+                }
+                
+                // Decode image
+                std::vector<uchar> image_data(file.content.begin(), file.content.end());
+                cv::Mat img = cv::imdecode(image_data, cv::IMREAD_COLOR);
+                
+                if (img.empty()) {
+                    json error;
+                    error["error"] = "Failed to decode image";
+                    res.status = 400;
+                    res.set_content(error.dump(), "application/json");
+                    return;
+                }
+                
+                // Resize image to 224x224
+                cv::Mat img_resized;
+                cv::resize(img, img_resized, cv::Size(224, 224));
+                
+                // Draw patch grid
+                int patch_size = 16;
+                int num_patches = 14; // 224/16 = 14
+                
+                // Draw grid lines
+                for (int i = 0; i <= num_patches; i++) {
+                    cv::line(img_resized, 
+                            cv::Point(0, i * patch_size), 
+                            cv::Point(224, i * patch_size), 
+                            cv::Scalar(0, 255, 0), 2);
+                    cv::line(img_resized, 
+                            cv::Point(i * patch_size, 0), 
+                            cv::Point(i * patch_size, 224), 
+                            cv::Scalar(0, 255, 0), 2);
+                }
+                
+                // Optionally add patch numbers
+                if (show_numbers) {
+                    for (int i = 0; i < num_patches; i++) {
+                        for (int j = 0; j < num_patches; j++) {
+                            int patch_idx = i * num_patches + j;
+                            cv::putText(img_resized, 
+                                      std::to_string(patch_idx),
+                                      cv::Point(j * patch_size + 2, i * patch_size + 14),
+                                      cv::FONT_HERSHEY_SIMPLEX, 
+                                      0.3, 
+                                      cv::Scalar(255, 255, 255), 
+                                      1);
+                        }
+                    }
+                }
+                
+                // Encode result
+                std::vector<uchar> buf;
+                cv::imencode(".png", img_resized, buf);
+                std::string result_base64 = base64_encode(buf);
+                
+                // Create response
+                json response;
+                response["patched_image"] = result_base64;
+                response["patch_size"] = patch_size;
+                response["num_patches_per_side"] = num_patches;
+                response["total_patches"] = num_patches * num_patches;
+                
+                res.set_content(response.dump(), "application/json");
+                
+                log_request("/visualize_patches/multipart", "POST", client_ip, "SUCCESS", 
+                           "show_numbers=" + std::to_string(show_numbers));
+                
+            } catch (const std::exception& e) {
+                json error;
+                error["error"] = e.what();
+                res.status = 500;
+                res.set_content(error.dump(), "application/json");
+                log_request("/visualize_patches/multipart", "POST", client_ip, "ERROR", 
+                           std::string("Exception: ") + e.what());
+            }
+        });
+        
+        // Visualize patches endpoint - shows how the image is divided into patches (JSON/base64 for compatibility)
         server_.Post("/visualize_patches", [this](const httplib::Request& req, httplib::Response& res) {
             std::string client_ip = req.remote_addr;
             if (client_ip.empty()) client_ip = "unknown";
@@ -730,33 +1160,135 @@ private:
             }
         });
         
-        // Multi-resolution reconstruction endpoint
-        server_.Post("/reconstruct_multisize", [this](const httplib::Request& req, httplib::Response& res) {
+        // Multi-resolution reconstruction endpoint - Binary
+        server_.Post("/reconstruct_multisize/binary", [this](const httplib::Request& req, httplib::Response& res) {
             std::string client_ip = req.remote_addr;
             if (client_ip.empty()) client_ip = "unknown";
             
             try {
                 auto start = std::chrono::high_resolution_clock::now();
                 
-                // Parse JSON request
-                json request = json::parse(req.body);
+                // Check for empty body
+                if (req.body.empty()) {
+                    res.status = 400;
+                    res.set_content("Empty request body", "text/plain");
+                    log_request("/reconstruct_multisize/binary", "POST", client_ip, "ERROR", "Empty request body");
+                    return;
+                }
                 
-                // Get image data
-                std::string image_base64 = request["image"];
-                float mask_ratio = request.value("mask_ratio", 0.75f);
-                int target_size = request.value("size", 224);  // Default 224, can be 448, 672, etc.
+                // Get parameters from headers
+                float mask_ratio = 0.75f;
+                if (req.has_header("X-Mask-Ratio")) {
+                    mask_ratio = std::stof(req.get_header_value("X-Mask-Ratio"));
+                }
+                
+                int target_size = 224;
+                if (req.has_header("X-Target-Size")) {
+                    target_size = std::stoi(req.get_header_value("X-Target-Size"));
+                }
                 
                 // Validate size (must be divisible by patch size 16)
+                if (target_size % 16 != 0) {
+                    res.status = 400;
+                    res.set_content("Size must be divisible by 16 (patch size)", "text/plain");
+                    log_request("/reconstruct_multisize/binary", "POST", client_ip, "ERROR", 
+                               "Invalid size: " + std::to_string(target_size));
+                    return;
+                }
+                
+                // Decode image
+                std::vector<uchar> image_data(req.body.begin(), req.body.end());
+                cv::Mat img = cv::imdecode(image_data, cv::IMREAD_COLOR);
+                
+                if (img.empty()) {
+                    res.status = 400;
+                    res.set_content("Failed to decode image", "text/plain");
+                    log_request("/reconstruct_multisize/binary", "POST", client_ip, "ERROR", 
+                               "Failed to decode image - size=" + std::to_string(req.body.size()));
+                    return;
+                }
+                
+                // Resize to target size
+                cv::Mat img_resized;
+                cv::resize(img, img_resized, cv::Size(target_size, target_size));
+                
+                // Preprocess at target size
+                torch::Tensor input_tensor = preprocess_image_multisize(img_resized, target_size);
+                
+                // Forward pass through MAE
+                torch::NoGradGuard no_grad;
+                auto [loss, pred, mask] = model_->forward(input_tensor, mask_ratio);
+                
+                // Unpatchify and convert to image
+                auto reconstructed_tensor = model_->unpatchify(pred);
+                cv::Mat reconstructed = tensor_to_image_multisize(reconstructed_tensor, target_size);
+                
+                // Encode result as PNG
+                std::vector<uchar> buf;
+                cv::imencode(".png", reconstructed, buf);
+                
+                res.set_content(reinterpret_cast<const char*>(buf.data()), buf.size(), "image/png");
+                
+                auto end = std::chrono::high_resolution_clock::now();
+                auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+                
+                log_request("/reconstruct_multisize/binary", "POST", client_ip, "SUCCESS", 
+                           "input=" + std::to_string(img.cols) + "x" + std::to_string(img.rows) +
+                           ", target_size=" + std::to_string(target_size) + 
+                           ", mask_ratio=" + std::to_string(mask_ratio) +
+                           ", time=" + std::to_string(duration.count()) + "ms");
+                
+            } catch (const std::exception& e) {
+                res.status = 500;
+                res.set_content(e.what(), "text/plain");
+                log_request("/reconstruct_multisize/binary", "POST", client_ip, "ERROR", 
+                           std::string("Exception: ") + e.what());
+            }
+        });
+        
+        // Multi-resolution reconstruction endpoint - Multipart
+        server_.Post("/reconstruct_multisize/multipart", [this](const httplib::Request& req, httplib::Response& res) {
+            std::string client_ip = req.remote_addr;
+            if (client_ip.empty()) client_ip = "unknown";
+            
+            try {
+                auto start = std::chrono::high_resolution_clock::now();
+                
+                if (!req.has_file("image")) {
+                    json error;
+                    error["error"] = "No image file in multipart request";
+                    res.status = 400;
+                    res.set_content(error.dump(), "application/json");
+                    log_request("/reconstruct_multisize/multipart", "POST", client_ip, "ERROR", "No image file");
+                    return;
+                }
+                
+                // Get parameters
+                const auto& file = req.get_file_value("image");
+                
+                float mask_ratio = 0.75f;
+                if (req.has_param("mask_ratio")) {
+                    mask_ratio = std::stof(req.get_param_value("mask_ratio"));
+                }
+                
+                int target_size = 224;
+                if (req.has_param("size")) {
+                    target_size = std::stoi(req.get_param_value("size"));
+                }
+                
+                // Validate size
                 if (target_size % 16 != 0) {
                     json error;
                     error["error"] = "Size must be divisible by 16 (patch size)";
                     res.status = 400;
                     res.set_content(error.dump(), "application/json");
+                    log_request("/reconstruct_multisize/multipart", "POST", client_ip, "ERROR", 
+                               "Invalid size: " + std::to_string(target_size));
                     return;
                 }
                 
-                // Decode base64 image
-                auto image_data = base64_decode(image_base64);
+                // Decode image
+                std::vector<uchar> image_data(file.content.begin(), file.content.end());
                 cv::Mat img = cv::imdecode(image_data, cv::IMREAD_COLOR);
                 
                 if (img.empty()) {
@@ -764,6 +1296,8 @@ private:
                     error["error"] = "Failed to decode image";
                     res.status = 400;
                     res.set_content(error.dump(), "application/json");
+                    log_request("/reconstruct_multisize/multipart", "POST", client_ip, "ERROR", 
+                               "Failed to decode image - " + file.filename);
                     return;
                 }
                 
@@ -800,8 +1334,8 @@ private:
                 
                 res.set_content(response.dump(), "application/json");
                 
-                log_request("/reconstruct_multisize", "POST", client_ip, "SUCCESS", 
-                           "size=" + std::to_string(target_size) + 
+                log_request("/reconstruct_multisize/multipart", "POST", client_ip, "SUCCESS", 
+                           file.filename + ", size=" + std::to_string(target_size) + 
                            ", mask_ratio=" + std::to_string(mask_ratio) +
                            ", time=" + std::to_string(duration.count()) + "ms");
                 
@@ -810,7 +1344,7 @@ private:
                 error["error"] = e.what();
                 res.status = 500;
                 res.set_content(error.dump(), "application/json");
-                log_request("/reconstruct_multisize", "POST", client_ip, "ERROR", 
+                log_request("/reconstruct_multisize/multipart", "POST", client_ip, "ERROR", 
                            std::string("Exception: ") + e.what());
             }
         });

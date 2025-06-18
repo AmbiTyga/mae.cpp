@@ -71,6 +71,7 @@ target_link_libraries(mae_server
     cxxopts::cxxopts
 )
 
+
 # Set RPATH for executables
 if (APPLE)
     set_target_properties(pretrain_mae mae_server PROPERTIES

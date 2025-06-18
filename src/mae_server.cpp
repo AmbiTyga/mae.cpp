@@ -200,6 +200,205 @@ private:
             }
         });
         
+        // Mask image endpoint - creates a masked version of the image
+        server_.Post("/mask_image", [this](const httplib::Request& req, httplib::Response& res) {
+            try {
+                // Parse JSON request
+                json request = json::parse(req.body);
+                
+                // Get image data
+                std::string image_base64 = request["image"];
+                float mask_ratio = request.value("mask_ratio", 0.75f);
+                
+                // Validate mask ratio
+                if (mask_ratio < 0.0f || mask_ratio > 1.0f) {
+                    json error;
+                    error["error"] = "Invalid mask_ratio. Must be between 0.0 and 1.0";
+                    res.status = 400;
+                    res.set_content(error.dump(), "application/json");
+                    return;
+                }
+                
+                // Decode base64 image
+                auto image_data = base64_decode(image_base64);
+                cv::Mat img = cv::imdecode(image_data, cv::IMREAD_COLOR);
+                
+                if (img.empty()) {
+                    json error;
+                    error["error"] = "Failed to decode image";
+                    res.status = 400;
+                    res.set_content(error.dump(), "application/json");
+                    return;
+                }
+                
+                // Resize image to 224x224
+                cv::Mat img_resized;
+                cv::resize(img, img_resized, cv::Size(224, 224));
+                
+                // Convert to RGB
+                cv::cvtColor(img_resized, img_resized, cv::COLOR_BGR2RGB);
+                
+                // Create mask pattern
+                int patch_size = 16;
+                int num_patches = 14; // 224/16 = 14
+                int total_patches = num_patches * num_patches;
+                
+                // Generate random mask
+                torch::manual_seed(42); // Use fixed seed for reproducibility or random
+                auto noise = torch::rand({total_patches});
+                auto ids_shuffle = torch::argsort(noise, 0, /*descending=*/false);
+                auto ids_restore = torch::argsort(ids_shuffle, 0, /*descending=*/false);
+                
+                int len_keep = static_cast<int>(total_patches * (1 - mask_ratio));
+                
+                // Create binary mask: 0 is keep, 1 is remove
+                auto mask = torch::ones({total_patches});
+                mask.index_put_({torch::indexing::Slice(0, len_keep)}, 0);
+                mask = torch::gather(mask, 0, ids_restore);
+                
+                // Apply mask to image visualization
+                cv::Mat masked_img = img_resized.clone();
+                
+                for (int i = 0; i < num_patches; i++) {
+                    for (int j = 0; j < num_patches; j++) {
+                        int patch_idx = i * num_patches + j;
+                        if (mask[patch_idx].item().toFloat() == 1.0f) {
+                            // This patch is masked - fill with gray
+                            cv::rectangle(masked_img, 
+                                        cv::Point(j * patch_size, i * patch_size),
+                                        cv::Point((j + 1) * patch_size, (i + 1) * patch_size),
+                                        cv::Scalar(128, 128, 128), -1);
+                        }
+                    }
+                }
+                
+                // Add grid lines for better visualization
+                for (int i = 0; i <= num_patches; i++) {
+                    cv::line(masked_img, 
+                            cv::Point(0, i * patch_size), 
+                            cv::Point(224, i * patch_size), 
+                            cv::Scalar(200, 200, 200), 1);
+                    cv::line(masked_img, 
+                            cv::Point(i * patch_size, 0), 
+                            cv::Point(i * patch_size, 224), 
+                            cv::Scalar(200, 200, 200), 1);
+                }
+                
+                // Convert back to BGR
+                cv::cvtColor(masked_img, masked_img, cv::COLOR_RGB2BGR);
+                
+                // Encode result
+                std::vector<uchar> buf;
+                cv::imencode(".png", masked_img, buf);
+                std::string masked_base64 = base64_encode(buf);
+                
+                // Convert mask to 2D array for response
+                std::vector<std::vector<float>> mask_array(num_patches, std::vector<float>(num_patches));
+                for (int i = 0; i < num_patches; i++) {
+                    for (int j = 0; j < num_patches; j++) {
+                        mask_array[i][j] = 1.0f - mask[i * num_patches + j].item().toFloat();
+                    }
+                }
+                
+                // Create response
+                json response;
+                response["masked_image"] = masked_base64;
+                response["mask"] = mask_array;
+                response["mask_ratio"] = mask_ratio;
+                response["num_masked_patches"] = total_patches - len_keep;
+                response["num_visible_patches"] = len_keep;
+                response["patch_size"] = patch_size;
+                
+                res.set_content(response.dump(), "application/json");
+                
+            } catch (const std::exception& e) {
+                json error;
+                error["error"] = e.what();
+                res.status = 500;
+                res.set_content(error.dump(), "application/json");
+            }
+        });
+        
+        // Visualize patches endpoint - shows how the image is divided into patches
+        server_.Post("/visualize_patches", [this](const httplib::Request& req, httplib::Response& res) {
+            try {
+                // Parse JSON request
+                json request = json::parse(req.body);
+                
+                // Get image data
+                std::string image_base64 = request["image"];
+                bool show_numbers = request.value("show_numbers", true);
+                
+                // Decode base64 image
+                auto image_data = base64_decode(image_base64);
+                cv::Mat img = cv::imdecode(image_data, cv::IMREAD_COLOR);
+                
+                if (img.empty()) {
+                    json error;
+                    error["error"] = "Failed to decode image";
+                    res.status = 400;
+                    res.set_content(error.dump(), "application/json");
+                    return;
+                }
+                
+                // Resize image to 224x224
+                cv::Mat img_resized;
+                cv::resize(img, img_resized, cv::Size(224, 224));
+                
+                // Draw patch grid
+                int patch_size = 16;
+                int num_patches = 14; // 224/16 = 14
+                
+                // Draw grid lines
+                for (int i = 0; i <= num_patches; i++) {
+                    cv::line(img_resized, 
+                            cv::Point(0, i * patch_size), 
+                            cv::Point(224, i * patch_size), 
+                            cv::Scalar(0, 255, 0), 2);
+                    cv::line(img_resized, 
+                            cv::Point(i * patch_size, 0), 
+                            cv::Point(i * patch_size, 224), 
+                            cv::Scalar(0, 255, 0), 2);
+                }
+                
+                // Optionally add patch numbers
+                if (show_numbers) {
+                    for (int i = 0; i < num_patches; i++) {
+                        for (int j = 0; j < num_patches; j++) {
+                            int patch_idx = i * num_patches + j;
+                            cv::putText(img_resized, 
+                                      std::to_string(patch_idx),
+                                      cv::Point(j * patch_size + 2, i * patch_size + 14),
+                                      cv::FONT_HERSHEY_SIMPLEX, 
+                                      0.3, 
+                                      cv::Scalar(255, 255, 255), 
+                                      1);
+                        }
+                    }
+                }
+                
+                // Encode result
+                std::vector<uchar> buf;
+                cv::imencode(".png", img_resized, buf);
+                std::string result_base64 = base64_encode(buf);
+                
+                // Create response
+                json response;
+                response["patched_image"] = result_base64;
+                response["patch_size"] = patch_size;
+                response["num_patches_per_side"] = num_patches;
+                response["total_patches"] = num_patches * num_patches;
+                
+                res.set_content(response.dump(), "application/json");
+                
+            } catch (const std::exception& e) {
+                json error;
+                error["error"] = e.what();
+                res.status = 500;
+                res.set_content(error.dump(), "application/json");
+            }
+        });
+        
         // Batch reconstruction endpoint
         server_.Post("/reconstruct_batch", [this](const httplib::Request& req, httplib::Response& res) {
             try {

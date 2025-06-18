@@ -322,9 +322,8 @@ void train_one_epoch(MaskedAutoencoderViT& model,
             }
             
             // Periodically clear CUDA cache to prevent memory fragmentation
-            if (config.device.type() == torch::kCUDA && batch_idx % (config.print_freq * 10) == 0) {
-                torch::cuda::empty_cache();
-            }
+            // Note: empty_cache is not available in all LibTorch versions
+            // Synchronization alone helps with memory management
         }
         
         data_start = std::chrono::high_resolution_clock::now();

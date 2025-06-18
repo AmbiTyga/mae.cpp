@@ -8,6 +8,9 @@
 #include <chrono>
 #include <iomanip>
 #include <filesystem>
+#include <nlohmann/json.hpp>
+
+using json = nlohmann::json;
 
 // Enhanced logger class for dual output with console clearing
 class PretrainLogger {
@@ -107,9 +110,21 @@ void save_checkpoint_with_logs(const MaskedAutoencoderViT& model,
     
     archive.save_to(model_path);
     
+    // Save training metadata as JSON
+    json metadata;
+    metadata["epoch"] = epoch;
+    metadata["step"] = step;
+    metadata["loss"] = loss;
+    metadata["lr"] = lr;
+    metadata["timestamp"] = get_timestamp();
+    
+    std::ofstream metadata_file(checkpoint_dir + "/metadata.json");
+    metadata_file << metadata.dump(4);
+    metadata_file.close();
+    
     // Save config
     std::ofstream config_file(checkpoint_dir + "/config.json");
-    config_file << std::ifstream(checkpoint_dir + "/../config.json").rdbuf();
+    config_file << std::ifstream(base_dir + "/config.json").rdbuf();
     config_file.close();
     
     // Copy current log to checkpoint directory
@@ -120,7 +135,7 @@ void save_checkpoint_with_logs(const MaskedAutoencoderViT& model,
            << loss << ", lr: " << std::scientific << std::setprecision(2) << lr << ")" << std::endl;
 }
 
-// Load checkpoint
+// Load checkpoint from file
 bool load_checkpoint(MaskedAutoencoderViT& model,
                     torch::optim::Optimizer& optimizer,
                     int64_t& epoch,
@@ -146,6 +161,45 @@ bool load_checkpoint(MaskedAutoencoderViT& model,
     logger << "Loaded checkpoint from " << filepath 
            << " (epoch: " << epoch << ", step: " << global_step << ")" << std::endl;
     return true;
+}
+
+// Load checkpoint from directory by reading metadata
+bool load_checkpoint_from_dir(MaskedAutoencoderViT& model,
+                             torch::optim::Optimizer& optimizer,
+                             int64_t& epoch,
+                             int64_t& global_step,
+                             const std::string& dir_path,
+                             PretrainLogger& logger) {
+    // Check if directory exists
+    if (!std::filesystem::exists(dir_path) || !std::filesystem::is_directory(dir_path)) {
+        logger << "Error: Directory '" << dir_path << "' not found or is not a directory." << std::endl;
+        return false;
+    }
+    
+    // Check for metadata.json
+    std::string metadata_path = dir_path + "/metadata.json";
+    if (std::filesystem::exists(metadata_path)) {
+        // Read metadata to get epoch and step
+        std::ifstream metadata_file(metadata_path);
+        json metadata;
+        metadata_file >> metadata;
+        metadata_file.close();
+        
+        epoch = metadata["epoch"];
+        global_step = metadata["step"];
+        
+        logger << "Found checkpoint metadata - Epoch: " << epoch 
+               << ", Step: " << global_step << std::endl;
+    }
+    
+    // Load model from model.pt
+    std::string model_path = dir_path + "/model.pt";
+    if (!std::filesystem::exists(model_path)) {
+        logger << "Error: Model file '" << model_path << "' not found in checkpoint directory." << std::endl;
+        return false;
+    }
+    
+    return load_checkpoint(model, optimizer, epoch, global_step, model_path, logger);
 }
 
 // Enhanced training function with proper augmentation
@@ -344,29 +398,75 @@ int main(int argc, char* argv[]) {
     int64_t global_step = 0;
     
     if (!config.resume.empty()) {
-        // Look for checkpoint in the checkpoint directory
         std::string checkpoint_path = config.resume;
         
-        // If resume is just a filename, prepend the checkpoint directory
-        if (checkpoint_path.find('/') == std::string::npos) {
+        // If resume path doesn't contain directory separator, assume it's in checkpoint_dir
+        if (checkpoint_path.find('/') == std::string::npos && checkpoint_path.find('\\') == std::string::npos) {
             checkpoint_path = config.checkpoint_dir + "/" + checkpoint_path;
         }
         
+        // Check if it's a directory or a file
         if (std::filesystem::exists(checkpoint_path)) {
-            load_checkpoint(model, optimizer, start_epoch, global_step, checkpoint_path, logger);
+            if (std::filesystem::is_directory(checkpoint_path)) {
+                // Load from directory using metadata
+                if (!load_checkpoint_from_dir(model, optimizer, start_epoch, global_step, checkpoint_path, logger)) {
+                    logger << "Failed to load checkpoint from directory. Starting from scratch..." << std::endl;
+                    start_epoch = config.start_epoch;
+                    global_step = 0;
+                }
+            } else {
+                // Load from file directly
+                if (!load_checkpoint(model, optimizer, start_epoch, global_step, checkpoint_path, logger)) {
+                    logger << "Failed to load checkpoint file. Starting from scratch..." << std::endl;
+                    start_epoch = config.start_epoch;
+                    global_step = 0;
+                }
+            }
         } else {
             logger << "Warning: Resume checkpoint '" << checkpoint_path << "' not found." << std::endl;
             logger << "Starting pretraining from scratch..." << std::endl;
             logger << "========================================" << std::endl;
         }
     } else if (config.auto_resume) {
-        std::string latest_checkpoint = config.checkpoint_dir + "/latest.pt";
-        if (std::filesystem::exists(latest_checkpoint)) {
-            load_checkpoint(model, optimizer, start_epoch, global_step, latest_checkpoint, logger);
+        // First try to find the latest checkpoint directory
+        std::string latest_dir;
+        std::filesystem::file_time_type latest_time;
+        bool found_checkpoint = false;
+        
+        // Look for step-* and epoch-* directories
+        if (std::filesystem::exists(config.checkpoint_dir)) {
+            for (const auto& entry : std::filesystem::directory_iterator(config.checkpoint_dir)) {
+                if (entry.is_directory()) {
+                    std::string dirname = entry.path().filename().string();
+                    if (dirname.find("step-") == 0 || dirname.find("epoch-") == 0) {
+                        auto mod_time = std::filesystem::last_write_time(entry);
+                        if (!found_checkpoint || mod_time > latest_time) {
+                            latest_time = mod_time;
+                            latest_dir = entry.path().string();
+                            found_checkpoint = true;
+                        }
+                    }
+                }
+            }
+        }
+        
+        if (found_checkpoint) {
+            logger << "Auto-resuming from latest checkpoint: " << latest_dir << std::endl;
+            if (!load_checkpoint_from_dir(model, optimizer, start_epoch, global_step, latest_dir, logger)) {
+                logger << "Failed to load checkpoint. Starting from scratch..." << std::endl;
+                start_epoch = config.start_epoch;
+                global_step = 0;
+            }
         } else {
-            logger << "No checkpoint found for auto-resume." << std::endl;
-            logger << "Starting pretraining from scratch..." << std::endl;
-            logger << "========================================" << std::endl;
+            // Fallback to latest.pt if it exists
+            std::string latest_checkpoint = config.checkpoint_dir + "/latest.pt";
+            if (std::filesystem::exists(latest_checkpoint)) {
+                load_checkpoint(model, optimizer, start_epoch, global_step, latest_checkpoint, logger);
+            } else {
+                logger << "No checkpoint found for auto-resume." << std::endl;
+                logger << "Starting pretraining from scratch..." << std::endl;
+                logger << "========================================" << std::endl;
+            }
         }
     }
     

@@ -60,9 +60,20 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(cxxopts)
 
-# Create inference server executable
+# Create inference server executable (for TorchScript models)
 add_executable(mae_server src/mae_server.cpp)
 target_link_libraries(mae_server 
+    mae_lib 
+    "${TORCH_LIBRARIES}" 
+    ${OpenCV_LIBS}
+    httplib::httplib
+    nlohmann_json::nlohmann_json
+    cxxopts::cxxopts
+)
+
+# Create native model server executable
+add_executable(mae_native_server src/mae_native_server.cpp)
+target_link_libraries(mae_native_server 
     mae_lib 
     "${TORCH_LIBRARIES}" 
     ${OpenCV_LIBS}
@@ -74,12 +85,12 @@ target_link_libraries(mae_server
 
 # Set RPATH for executables
 if (APPLE)
-    set_target_properties(pretrain_mae mae_server PROPERTIES
+    set_target_properties(pretrain_mae mae_server mae_native_server PROPERTIES
         BUILD_RPATH "@loader_path/../lib"
         INSTALL_RPATH "@loader_path/../lib"
     )
 elseif (UNIX)
-    set_target_properties(pretrain_mae mae_server PROPERTIES
+    set_target_properties(pretrain_mae mae_server mae_native_server PROPERTIES
         BUILD_RPATH "$ORIGIN/../lib"
         INSTALL_RPATH "$ORIGIN/../lib"
     )

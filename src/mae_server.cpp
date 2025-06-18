@@ -189,8 +189,17 @@ private:
         
         // Reconstruction endpoint with multipart support
         server_.Post("/reconstruct/multipart", [this](const httplib::Request& req, httplib::Response& res) {
-            std::string client_ip = req.get_header_value("REMOTE_ADDR");
-            if (client_ip.empty()) client_ip = "unknown";
+            // Get client IP - try different methods
+            std::string client_ip = req.remote_addr;
+            if (client_ip.empty()) {
+                client_ip = req.get_header_value("X-Forwarded-For");
+                if (client_ip.empty()) {
+                    client_ip = req.get_header_value("X-Real-IP");
+                    if (client_ip.empty()) {
+                        client_ip = "unknown";
+                    }
+                }
+            }
             
             try {
                 auto start = std::chrono::high_resolution_clock::now();
@@ -353,13 +362,34 @@ private:
         
         // Binary reconstruction endpoint - returns raw image bytes
         server_.Post("/reconstruct/binary", [this](const httplib::Request& req, httplib::Response& res) {
-            std::string client_ip = req.get_header_value("REMOTE_ADDR");
-            if (client_ip.empty()) client_ip = "unknown";
+            // Get client IP - try different methods
+            std::string client_ip = req.remote_addr;
+            if (client_ip.empty()) {
+                client_ip = req.get_header_value("X-Forwarded-For");
+                if (client_ip.empty()) {
+                    client_ip = req.get_header_value("X-Real-IP");
+                    if (client_ip.empty()) {
+                        client_ip = "unknown";
+                    }
+                }
+            }
             
             try {
                 auto start = std::chrono::high_resolution_clock::now();
                 
+                // Debug logging
+                log_request("/reconstruct/binary", "POST", client_ip, "RECEIVED", 
+                           "body_size=" + std::to_string(req.body.size()) + 
+                           ", content_type=" + req.get_header_value("Content-Type"));
+                
                 // Get raw image bytes from request body
+                if (req.body.empty()) {
+                    res.status = 400;
+                    res.set_content("Empty request body", "text/plain");
+                    log_request("/reconstruct/binary", "POST", client_ip, "ERROR", "Empty request body");
+                    return;
+                }
+                
                 std::vector<uchar> image_data(req.body.begin(), req.body.end());
                 std::string input_info = "input_size=" + std::to_string(req.body.size()) + " bytes";
                 

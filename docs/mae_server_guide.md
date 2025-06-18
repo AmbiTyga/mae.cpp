@@ -6,7 +6,7 @@ This guide covers building, running, and using the MAE (Masked Autoencoder) infe
 1. [Building the Server](#building-the-server)
 2. [Starting the Server](#starting-the-server)
 3. [API Endpoints](#api-endpoints)
-4. [Using cURL with Local Images](#using-curl-with-local-images)
+4. [Complete Usage Examples](#complete-usage-examples)
 5. [Python Client Examples](#python-client-examples)
 6. [Troubleshooting](#troubleshooting)
 
@@ -22,7 +22,7 @@ This guide covers building, running, and using the MAE (Masked Autoencoder) infe
 
 ```bash
 # Clone the repository (if not already done)
-cd /path/to/mae.cpp
+cd /path/to/MAE
 
 # Create build directory
 mkdir -p build
@@ -43,187 +43,338 @@ ls -la mae_server
 ### Basic Usage
 
 ```bash
-# Start with default settings (localhost:8080)
-./mae_server --model /path/to/checkpoint/folder/model.pt
-
-# Or specify the exact checkpoint file
-./mae_server --model ../checkpoints/epoch-50/model.pt
+# Start with a native PyTorch checkpoint
+./mae_server --checkpoint /path/to/checkpoint.pt --model mae_vit_base_patch16
 
 # Custom host and port
-./mae_server --model ../checkpoints/final.pt --host 0.0.0.0 --port 8000
+./mae_server --checkpoint ../checkpoints/model.pt --model mae_vit_base_patch16 --host 0.0.0.0 --port 8000
 
 # See all options
 ./mae_server --help
 ```
 
 ### Command Line Options
-- `--model, -m`: Path to model checkpoint (required)
-- `--host, -h`: Server host (default: 127.0.0.1)
+- `--checkpoint, -c`: Path to model checkpoint file (required)
+- `--model, -m`: Model type (mae_vit_base_patch16, mae_vit_large_patch16, mae_vit_huge_patch14)
+- `--host, -h`: Server host (default: 0.0.0.0)
 - `--port, -p`: Server port (default: 8080)
 - `--help`: Show help message
 
 ### Example Server Start
 ```bash
 # Assuming you're in the build directory
-./mae_server --model ../checkpoints/final.pt --host 0.0.0.0 --port 8080
+./mae_server --checkpoint ../checkpoints/step-23000/model.pt --model mae_vit_base_patch16
 ```
 
 You should see:
 ```
-Loaded MAE model from ../checkpoints/final.pt
-Initialized MAE server with model: ../checkpoints/final.pt
+Loaded MAE model from: ../checkpoints/step-23000/model.pt
+Model type: mae_vit_base_patch16
 Device: CUDA
 Starting MAE inference server on 0.0.0.0:8080
 ```
 
 ## API Endpoints
 
+### 1. Health Check - GET /health
+Check if the server is running.
+
+### 2. Server Info - GET /info
+Get model and server information.
+
+### 3. Binary Reconstruction - POST /reconstruct/binary
+Send raw image bytes, receive PNG image.
+
+### 4. Multipart Reconstruction - POST /reconstruct/multipart
+Send image as multipart form data.
+
+### 5. JSON Reconstruction - POST /reconstruct
+Send base64 encoded image in JSON.
+
+### 6. Mask Image - POST /mask_image
+Create a visualization of the masked image.
+
+### 7. Visualize Patches - POST /visualize_patches
+Show how an image is divided into patches.
+
+### 8. Multi-resolution Reconstruction - POST /reconstruct_multisize
+Reconstruct at different resolutions.
+
+### 9. Batch Reconstruction - POST /reconstruct_batch
+Process multiple images at once.
+
+## Complete Usage Examples
+
 ### 1. Health Check
-Check if the server is running:
+
+**cURL:**
 ```bash
 curl http://localhost:8080/health
 ```
 
-Response:
+**wget:**
+```bash
+wget -qO- http://localhost:8080/health
+```
+
+**Response:**
 ```json
 {
   "status": "ok",
-  "service": "MAE Inference Server"
+  "service": "MAE Server"
 }
 ```
 
 ### 2. Server Info
-Get model information:
+
+**cURL:**
 ```bash
 curl http://localhost:8080/info
 ```
 
-Response:
+**wget:**
+```bash
+wget -qO- http://localhost:8080/info
+```
+
+**Response:**
 ```json
 {
-  "model": "Masked Autoencoder Vision Transformer",
+  "model": "Masked Autoencoder",
   "device": "cuda:0",
   "input_size": 224
 }
 ```
 
-### 3. Visualize Patches
-Show how an image is divided into patches:
+### 3. Binary Reconstruction (Recommended)
+
+**cURL:**
 ```bash
-# Endpoint: POST /visualize_patches
-# Input: image (base64), show_numbers (boolean)
-# Output: patched_image with grid overlay
+# Basic reconstruction
+curl -X POST http://localhost:8080/reconstruct/binary \
+  -H "Content-Type: image/jpeg" \
+  -H "X-Mask-Ratio: 0.75" \
+  --data-binary "@image.jpg" \
+  --output reconstructed.png
+
+# Different mask ratios
+curl -X POST http://localhost:8080/reconstruct/binary \
+  -H "Content-Type: image/jpeg" \
+  -H "X-Mask-Ratio: 0.5" \
+  --data-binary "@image.jpg" \
+  --output reconstructed_50.png
 ```
 
-### 4. Mask Image
-Create a masked version of the image:
+**wget:**
 ```bash
-# Endpoint: POST /mask_image
-# Input: image (base64), mask_ratio (float 0-1)
-# Output: masked_image, mask array, statistics
+# Basic reconstruction
+wget --post-file=image.jpg \
+     --header="Content-Type: image/jpeg" \
+     --header="X-Mask-Ratio: 0.75" \
+     -O reconstructed.png \
+     http://localhost:8080/reconstruct/binary
+
+# Different mask ratios
+wget --post-file=image.jpg \
+     --header="X-Mask-Ratio: 0.9" \
+     -O reconstructed_90.png \
+     http://localhost:8080/reconstruct/binary
 ```
 
-### 5. Reconstruct Image
-Reconstruct an image with masked patches:
+### 4. Multipart Form Data
+
+**cURL:**
 ```bash
-# Endpoint: POST /reconstruct
-# Input: image (base64), mask_ratio (float 0-1)
-# Output: reconstructed image
+# Send as multipart
+curl -X POST http://localhost:8080/reconstruct/multipart \
+  -F "image=@image.jpg" \
+  -F "mask_ratio=0.75" \
+  --output response.json
+
+# Extract base64 result
+curl -X POST http://localhost:8080/reconstruct/multipart \
+  -F "image=@image.jpg" \
+  -F "mask_ratio=0.75" | \
+  jq -r '.reconstruction' | base64 -d > reconstructed.png
 ```
 
-## Using cURL with Local Images
-
-### Helper Script for Base64 Encoding
-
-Create a helper script `encode_image.sh`:
+**wget (using a helper script):**
 ```bash
-#!/bin/bash
-if [ $# -eq 0 ]; then
-    echo "Usage: $0 <image_path>"
-    exit 1
-fi
-base64 -w 0 "$1"
+# Create multipart form data file
+cat > form_data.txt << 'EOF'
+--boundary
+Content-Disposition: form-data; name="image"; filename="image.jpg"
+Content-Type: image/jpeg
+
+$(cat image.jpg | xxd -p | tr -d '\n' | xxd -r -p)
+--boundary
+Content-Disposition: form-data; name="mask_ratio"
+
+0.75
+--boundary--
+EOF
+
+# Send request
+wget --post-file=form_data.txt \
+     --header="Content-Type: multipart/form-data; boundary=boundary" \
+     -O response.json \
+     http://localhost:8080/reconstruct/multipart
 ```
 
-Make it executable:
-```bash
-chmod +x encode_image.sh
-```
+### 5. JSON with Base64 Encoding
 
-### cURL Examples with Local Images
-
-#### 1. Reconstruct an Image (75% masking)
+**cURL:**
 ```bash
-# Method 1: Using the helper script
+# One-liner
 curl -X POST http://localhost:8080/reconstruct \
   -H "Content-Type: application/json" \
-  -d '{
-    "image": "'$(./encode_image.sh /path/to/your/image.jpg)'",
-    "mask_ratio": 0.75
-  }' | jq -r '.reconstruction' | base64 -d > reconstructed.png
+  -d '{"image":"'$(base64 -w 0 image.jpg)'","mask_ratio":0.75}' | \
+  jq -r '.reconstruction' | base64 -d > reconstructed.png
 
-# Method 2: Direct base64 encoding
+# With intermediate steps
+IMAGE_BASE64=$(base64 -w 0 image.jpg)
 curl -X POST http://localhost:8080/reconstruct \
   -H "Content-Type: application/json" \
-  -d '{
-    "image": "'$(base64 -w 0 /path/to/your/image.jpg)'",
-    "mask_ratio": 0.75
-  }' | jq -r '.reconstruction' | base64 -d > reconstructed.png
+  -d "{\"image\":\"$IMAGE_BASE64\",\"mask_ratio\":0.75}" | \
+  jq -r '.reconstruction' | base64 -d > reconstructed.png
 ```
 
-#### 2. Create Masked Image
+**wget:**
 ```bash
-# Create and save masked version
+# Create JSON request
+echo '{"image":"'$(base64 -w 0 image.jpg)'","mask_ratio":0.75}' > request.json
+
+# Send request
+wget -qO- --post-data="@request.json" \
+     --header="Content-Type: application/json" \
+     http://localhost:8080/reconstruct | \
+     jq -r '.reconstruction' | base64 -d > reconstructed.png
+```
+
+### 6. Mask Image Visualization
+
+**cURL:**
+```bash
+# Create masked visualization
 curl -X POST http://localhost:8080/mask_image \
   -H "Content-Type: application/json" \
-  -d '{
-    "image": "'$(base64 -w 0 /path/to/your/image.jpg)'",
-    "mask_ratio": 0.75
-  }' | jq -r '.masked_image' | base64 -d > masked.png
+  -d '{"image":"'$(base64 -w 0 image.jpg)'","mask_ratio":0.75}' | \
+  jq -r '.masked_image' | base64 -d > masked.png
 
 # Get full response with mask array
 curl -X POST http://localhost:8080/mask_image \
   -H "Content-Type: application/json" \
-  -d '{
-    "image": "'$(base64 -w 0 /path/to/your/image.jpg)'",
-    "mask_ratio": 0.75
-  }' > mask_response.json
+  -d '{"image":"'$(base64 -w 0 image.jpg)'","mask_ratio":0.75}' > mask_response.json
 ```
 
-#### 3. Visualize Patches
+**wget:**
+```bash
+# Create masked visualization
+echo '{"image":"'$(base64 -w 0 image.jpg)'","mask_ratio":0.75}' | \
+wget -qO- --post-data=@- \
+     --header="Content-Type: application/json" \
+     http://localhost:8080/mask_image | \
+     jq -r '.masked_image' | base64 -d > masked.png
+```
+
+### 7. Visualize Patches
+
+**cURL:**
 ```bash
 # Show patch grid with numbers
 curl -X POST http://localhost:8080/visualize_patches \
   -H "Content-Type: application/json" \
-  -d '{
-    "image": "'$(base64 -w 0 /path/to/your/image.jpg)'",
-    "show_numbers": true
-  }' | jq -r '.patched_image' | base64 -d > patches.png
-```
+  -d '{"image":"'$(base64 -w 0 image.jpg)'","show_numbers":true}' | \
+  jq -r '.patched_image' | base64 -d > patches.png
 
-### One-Line Commands
-
-#### Quick Reconstruction
-```bash
-# Reconstruct with default 75% masking
-curl -sX POST http://localhost:8080/reconstruct \
+# Without numbers
+curl -X POST http://localhost:8080/visualize_patches \
   -H "Content-Type: application/json" \
-  -d '{"image":"'$(base64 -w 0 image.jpg)'"}' | \
-  jq -r '.reconstruction' | base64 -d > output.png
+  -d '{"image":"'$(base64 -w 0 image.jpg)'","show_numbers":false}' | \
+  jq -r '.patched_image' | base64 -d > patches_plain.png
 ```
 
-#### Multiple Mask Ratios
+**wget:**
 ```bash
-# Test different mask ratios
-for ratio in 0.5 0.75 0.9; do
-  curl -sX POST http://localhost:8080/reconstruct \
-    -H "Content-Type: application/json" \
-    -d '{"image":"'$(base64 -w 0 image.jpg)'","mask_ratio":'$ratio'}' | \
-    jq -r '.reconstruction' | base64 -d > "reconstructed_${ratio}.png"
+# Show patch grid
+echo '{"image":"'$(base64 -w 0 image.jpg)'","show_numbers":true}' | \
+wget -qO- --post-data=@- \
+     --header="Content-Type: application/json" \
+     http://localhost:8080/visualize_patches | \
+     jq -r '.patched_image' | base64 -d > patches.png
+```
+
+### 8. Multi-resolution Reconstruction
+
+**cURL:**
+```bash
+# Reconstruct at 448x448
+curl -X POST http://localhost:8080/reconstruct_multisize \
+  -H "Content-Type: application/json" \
+  -d '{"image":"'$(base64 -w 0 image.jpg)'","mask_ratio":0.75,"size":448}' | \
+  jq -r '.reconstruction' | base64 -d > reconstructed_448.png
+
+# Reconstruct at 672x672
+curl -X POST http://localhost:8080/reconstruct_multisize \
+  -H "Content-Type: application/json" \
+  -d '{"image":"'$(base64 -w 0 image.jpg)'","mask_ratio":0.75,"size":672}' | \
+  jq -r '.reconstruction' | base64 -d > reconstructed_672.png
+```
+
+**wget:**
+```bash
+# Multi-resolution reconstruction
+echo '{"image":"'$(base64 -w 0 image.jpg)'","mask_ratio":0.75,"size":448}' | \
+wget -qO- --post-data=@- \
+     --header="Content-Type: application/json" \
+     http://localhost:8080/reconstruct_multisize | \
+     jq -r '.reconstruction' | base64 -d > reconstructed_448.png
+```
+
+### 9. Batch Processing
+
+**cURL:**
+```bash
+# Process multiple images
+curl -X POST http://localhost:8080/reconstruct_batch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "images": [
+      "'$(base64 -w 0 image1.jpg)'",
+      "'$(base64 -w 0 image2.jpg)'",
+      "'$(base64 -w 0 image3.jpg)'"
+    ],
+    "mask_ratio": 0.75
+  }' > batch_response.json
+
+# Extract all reconstructions
+jq -r '.reconstructions[]' batch_response.json | while IFS= read -r img; do
+  echo "$img" | base64 -d > "batch_output_$((++i)).png"
 done
 ```
 
-### Complete Workflow Script
+**wget:**
+```bash
+# Create batch request
+cat > batch_request.json << EOF
+{
+  "images": [
+    "$(base64 -w 0 image1.jpg)",
+    "$(base64 -w 0 image2.jpg)"
+  ],
+  "mask_ratio": 0.75
+}
+EOF
+
+# Send batch request
+wget -qO- --post-file=batch_request.json \
+     --header="Content-Type: application/json" \
+     http://localhost:8080/reconstruct_batch > batch_response.json
+```
+
+## Utility Scripts
+
+### Complete Processing Script
 
 Create `mae_process.sh`:
 ```bash
@@ -241,95 +392,150 @@ BASENAME=$(basename "$IMAGE_PATH" .${IMAGE_PATH##*.})
 
 echo "Processing $IMAGE_PATH with mask_ratio=$MASK_RATIO"
 
-# Encode image
-IMAGE_BASE64=$(base64 -w 0 "$IMAGE_PATH")
+# Test different endpoints
+echo "1. Binary endpoint (fastest)..."
+curl -sX POST $SERVER/reconstruct/binary \
+  -H "X-Mask-Ratio: $MASK_RATIO" \
+  --data-binary "@$IMAGE_PATH" \
+  --output "${BASENAME}_binary.png"
 
-# 1. Visualize patches
-echo "Creating patch visualization..."
+echo "2. Creating masked visualization..."
+IMAGE_BASE64=$(base64 -w 0 "$IMAGE_PATH")
+curl -sX POST $SERVER/mask_image \
+  -H "Content-Type: application/json" \
+  -d "{\"image\":\"$IMAGE_BASE64\",\"mask_ratio\":$MASK_RATIO}" | \
+  jq -r '.masked_image' | base64 -d > "${BASENAME}_masked.png"
+
+echo "3. Creating patch visualization..."
 curl -sX POST $SERVER/visualize_patches \
   -H "Content-Type: application/json" \
-  -d '{"image":"'$IMAGE_BASE64'","show_numbers":true}' | \
+  -d "{\"image\":\"$IMAGE_BASE64\",\"show_numbers\":true}" | \
   jq -r '.patched_image' | base64 -d > "${BASENAME}_patches.png"
 
-# 2. Create masked image
-echo "Creating masked image..."
-MASK_RESPONSE=$(curl -sX POST $SERVER/mask_image \
-  -H "Content-Type: application/json" \
-  -d '{"image":"'$IMAGE_BASE64'","mask_ratio":'$MASK_RATIO'}')
-
-echo "$MASK_RESPONSE" | jq -r '.masked_image' | base64 -d > "${BASENAME}_masked.png"
-echo "Masked patches: $(echo "$MASK_RESPONSE" | jq -r '.num_masked_patches')"
-echo "Visible patches: $(echo "$MASK_RESPONSE" | jq -r '.num_visible_patches')"
-
-# 3. Reconstruct
-echo "Reconstructing image..."
-RECON_RESPONSE=$(curl -sX POST $SERVER/reconstruct \
-  -H "Content-Type: application/json" \
-  -d '{"image":"'$IMAGE_BASE64'","mask_ratio":'$MASK_RATIO'}')
-
-echo "$RECON_RESPONSE" | jq -r '.reconstruction' | base64 -d > "${BASENAME}_reconstructed.png"
-echo "Processing time: $(echo "$RECON_RESPONSE" | jq -r '.processing_time_ms')ms"
-
 echo "Done! Created:"
-echo "  - ${BASENAME}_patches.png"
-echo "  - ${BASENAME}_masked.png"
-echo "  - ${BASENAME}_reconstructed.png"
+ls -la "${BASENAME}"_*.png
 ```
 
-Make it executable and use:
+### Batch Testing Script
+
+Create `test_mask_ratios.sh`:
 ```bash
-chmod +x mae_process.sh
-./mae_process.sh /path/to/image.jpg 0.75
+#!/bin/bash
+
+IMAGE=$1
+for ratio in 0.25 0.5 0.75 0.9; do
+  echo "Testing mask_ratio=$ratio"
+  curl -sX POST http://localhost:8080/reconstruct/binary \
+    -H "X-Mask-Ratio: $ratio" \
+    --data-binary "@$IMAGE" \
+    --output "reconstructed_${ratio}.png"
+done
 ```
 
 ## Python Client Examples
 
-### Simple Python Script
+### Simple Client
+```python
+import requests
+import base64
+from pathlib import Path
+
+def reconstruct_image(image_path, mask_ratio=0.75, server="http://localhost:8080"):
+    # Method 1: Binary endpoint (recommended)
+    with open(image_path, 'rb') as f:
+        response = requests.post(
+            f"{server}/reconstruct/binary",
+            data=f.read(),
+            headers={
+                'Content-Type': 'image/jpeg',
+                'X-Mask-Ratio': str(mask_ratio)
+            }
+        )
+    
+    if response.status_code == 200:
+        output_path = Path(image_path).stem + "_reconstructed.png"
+        with open(output_path, 'wb') as f:
+            f.write(response.content)
+        print(f"Saved to {output_path}")
+    else:
+        print(f"Error: {response.text}")
+
+# Usage
+reconstruct_image("image.jpg", mask_ratio=0.75)
+```
+
+### Advanced Client with All Endpoints
 ```python
 import requests
 import base64
 import json
-import sys
+from pathlib import Path
 
-def process_image(image_path, mask_ratio=0.75):
-    # Read and encode image
-    with open(image_path, 'rb') as f:
-        image_base64 = base64.b64encode(f.read()).decode('utf-8')
+class MAEClient:
+    def __init__(self, server_url="http://localhost:8080"):
+        self.server = server_url
     
-    # Server URL
-    server_url = "http://localhost:8080"
+    def health_check(self):
+        return requests.get(f"{self.server}/health").json()
     
-    # Reconstruct image
-    response = requests.post(f"{server_url}/reconstruct", 
-                           json={"image": image_base64, "mask_ratio": mask_ratio})
+    def reconstruct_binary(self, image_path, mask_ratio=0.75):
+        """Fastest method - recommended"""
+        with open(image_path, 'rb') as f:
+            response = requests.post(
+                f"{self.server}/reconstruct/binary",
+                data=f.read(),
+                headers={
+                    'Content-Type': 'image/jpeg',
+                    'X-Mask-Ratio': str(mask_ratio)
+                }
+            )
+        return response.content if response.status_code == 200 else None
     
-    if response.status_code == 200:
-        result = response.json()
-        # Decode and save result
-        img_data = base64.b64decode(result['reconstruction'])
-        with open('reconstructed.png', 'wb') as f:
-            f.write(img_data)
-        print(f"Saved reconstructed image. Processing time: {result['processing_time_ms']}ms")
-    else:
-        print(f"Error: {response.text}")
+    def reconstruct_json(self, image_path, mask_ratio=0.75):
+        """JSON method with base64"""
+        with open(image_path, 'rb') as f:
+            image_base64 = base64.b64encode(f.read()).decode('utf-8')
+        
+        response = requests.post(
+            f"{self.server}/reconstruct",
+            json={"image": image_base64, "mask_ratio": mask_ratio}
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            return base64.b64decode(result['reconstruction'])
+        return None
+    
+    def mask_image(self, image_path, mask_ratio=0.75):
+        """Get masked visualization"""
+        with open(image_path, 'rb') as f:
+            image_base64 = base64.b64encode(f.read()).decode('utf-8')
+        
+        response = requests.post(
+            f"{self.server}/mask_image",
+            json={"image": image_base64, "mask_ratio": mask_ratio}
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            return {
+                'image': base64.b64decode(result['masked_image']),
+                'mask': result['mask'],
+                'stats': {
+                    'masked': result['num_masked_patches'],
+                    'visible': result['num_visible_patches']
+                }
+            }
+        return None
 
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python mae_client.py <image_path> [mask_ratio]")
-        sys.exit(1)
-    
-    image_path = sys.argv[1]
-    mask_ratio = float(sys.argv[2]) if len(sys.argv) > 2 else 0.75
-    process_image(image_path, mask_ratio)
-```
+# Usage
+client = MAEClient()
+print(client.health_check())
 
-### Using the Provided Client
-```bash
-# Full demo
-python scripts/mae_client.py --server http://localhost:8080 --image photo.jpg --action demo
-
-# Just reconstruction
-python scripts/mae_client.py --server http://localhost:8080 --image photo.jpg --action reconstruct --mask-ratio 0.9
+# Reconstruct
+img_data = client.reconstruct_binary("photo.jpg", mask_ratio=0.8)
+with open("result.png", "wb") as f:
+    f.write(img_data)
 ```
 
 ## Troubleshooting
@@ -337,49 +543,58 @@ python scripts/mae_client.py --server http://localhost:8080 --image photo.jpg --
 ### Common Issues
 
 1. **Server won't start**
-   - Check if the model path is correct
-   - Ensure the port is not already in use
-   - Verify LibTorch is properly installed
+   ```bash
+   # Check if port is in use
+   lsof -i :8080
+   
+   # Check model file exists
+   ls -la ../checkpoints/model.pt
+   ```
 
-2. **CUDA errors**
-   - Model was trained on GPU but server has no GPU: The server will automatically fall back to CPU
-   - Out of memory: Reduce batch size or use CPU
+2. **wget 500 errors**
+   ```bash
+   # Use curl instead
+   curl -X POST http://localhost:8080/reconstruct/binary \
+     --data-binary "@image.jpg" \
+     -H "X-Mask-Ratio: 0.75" \
+     --output result.png
+   
+   # Or check server logs
+   tail -f mae_server_*.log
+   ```
 
-3. **Image decoding errors**
-   - Ensure image is properly base64 encoded
-   - Check that the image file exists and is readable
-   - Try with a different image format (JPEG, PNG)
+3. **CUDA errors**
+   - Model will automatically fall back to CPU if GPU not available
+   - Check GPU memory: `nvidia-smi`
 
-4. **Slow processing**
-   - First request is always slower (model loading)
-   - CPU inference is much slower than GPU
-   - Large images are resized to 224x224 anyway
+4. **Image decoding errors**
+   - Ensure image file exists and is valid
+   - Try different image formats (JPEG, PNG)
+   - Check file permissions
 
-### Debug Mode
+### Debug Commands
 
-For debugging, you can save intermediate files:
 ```bash
-# Save base64 encoded image
-base64 -w 0 image.jpg > image_base64.txt
+# Check server logs
+tail -f mae_server_*.log
 
-# Create JSON request
-echo '{"image":"'$(cat image_base64.txt)'","mask_ratio":0.75}' > request.json
+# Test with small image
+convert -size 224x224 xc:red test.jpg
+wget --post-file=test.jpg \
+     --header="X-Mask-Ratio: 0.75" \
+     -O test_result.png \
+     http://localhost:8080/reconstruct/binary
 
-# Send request and save response
-curl -X POST http://localhost:8080/reconstruct \
-  -H "Content-Type: application/json" \
-  -d @request.json > response.json
-
-# Extract and decode result
-jq -r '.reconstruction' response.json | base64 -d > result.png
+# Monitor server performance
+curl http://localhost:8080/info
 ```
 
 ### Performance Tips
 
-1. **Batch Processing**: Use the `/reconstruct_batch` endpoint for multiple images
-2. **Keep Server Running**: First request loads the model, subsequent requests are faster
-3. **Use GPU**: If available, GPU inference is much faster
-4. **Local Network**: Use 127.0.0.1 instead of 0.0.0.0 for local testing
+1. **Use Binary Endpoint**: Much faster than base64 encoding
+2. **Batch Processing**: Use `/reconstruct_batch` for multiple images
+3. **Keep Server Running**: First request loads model, subsequent requests are faster
+4. **GPU Usage**: Ensure CUDA is available for best performance
 
 ## Example Output
 
@@ -387,21 +602,18 @@ When everything works correctly:
 ```bash
 $ ./mae_process.sh cat.jpg 0.75
 Processing cat.jpg with mask_ratio=0.75
-Creating patch visualization...
-Creating masked image...
-Masked patches: 147
-Visible patches: 49
-Reconstructing image...
-Processing time: 156ms
+1. Binary endpoint (fastest)...
+2. Creating masked visualization...
+3. Creating patch visualization...
 Done! Created:
-  - cat_patches.png
-  - cat_masked.png
-  - cat_reconstructed.png
+-rw-r--r-- 1 user user 145K Jun 18 10:30 cat_binary.png
+-rw-r--r-- 1 user user  98K Jun 18 10:30 cat_masked.png
+-rw-r--r-- 1 user user 134K Jun 18 10:30 cat_patches.png
 ```
 
-The server will show:
+Server logs will show:
 ```
-[INFO] 127.0.0.1:54321 "POST /visualize_patches" 200
-[INFO] 127.0.0.1:54321 "POST /mask_image" 200
-[INFO] 127.0.0.1:54321 "POST /reconstruct" 200
+2025-06-18 10:30:15 | POST /reconstruct/binary | Client: 127.0.0.1 | Status: SUCCESS | input=512x384, mask_ratio=0.75, time=125ms
+2025-06-18 10:30:16 | POST /mask_image | Client: 127.0.0.1 | Status: SUCCESS | mask_ratio=0.75
+2025-06-18 10:30:17 | POST /visualize_patches | Client: 127.0.0.1 | Status: SUCCESS | show_numbers=1
 ```

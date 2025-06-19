@@ -1,19 +1,33 @@
 # Masked Autoencoder (MAE) - C++ Implementation
 
-A PyTorch C++ implementation of Masked Autoencoder (MAE) for self-supervised visual representation learning.
+A high-performance PyTorch C++ implementation of Masked Autoencoder (MAE) for self-supervised visual representation learning, including both training and inference server capabilities.
 
 ## Overview
 
-This project implements the Masked Autoencoder (MAE) architecture from the paper "Masked Autoencoders Are Scalable Vision Learners" using PyTorch C++ API (LibTorch). The implementation is optimized for training on modern GPUs like RTX 4090.
+This project implements the Masked Autoencoder (MAE) architecture from the paper "Masked Autoencoders Are Scalable Vision Learners" using PyTorch C++ API (LibTorch). The implementation includes:
+
+- Full MAE architecture with ViT-Base, ViT-Large, and ViT-Huge variants
+- Optimized pretraining pipeline with gradient accumulation
+- HTTP inference server for real-time image reconstruction
+- Efficient data loading with OpenCV
+- Mixed precision training support
+- Comprehensive checkpoint management
 
 ## Features
 
-- Full MAE architecture implementation in C++
-- Support for ViT-Base, ViT-Large, and ViT-Huge variants
-- Efficient data loading with OpenCV
-- Mixed precision training support
-- Checkpoint saving/loading
+### Training
+- Support for all three MAE model variants (Base/Large/Huge)
 - Cosine learning rate schedule with warmup
+- AdamW optimizer with gradient clipping
+- Automatic checkpoint saving and resuming
+- Efficient data augmentation pipeline
+
+### Inference Server
+- Binary-only REST API (no base64 overhead)
+- Three simple endpoints: mask, reconstruct, and combined
+- Real-time image processing
+- GPU acceleration support
+- Request logging and monitoring
 
 ## Project Structure
 
@@ -25,10 +39,18 @@ MAE/
 ├── src/
 │   ├── mae_model.cpp      # MAE model implementation
 │   ├── data_loader.cpp    # Dataset implementation
-│   └── train_mae.cpp      # Training script
+│   ├── train_mae.cpp      # Basic training script
+│   ├── pretrain_mae.cpp   # Full pretraining pipeline
+│   └── mae_server.cpp     # HTTP inference server
+├── configs/               # Training configuration files
+│   ├── mae_pretrain_vit_base.json
+│   ├── mae_pretrain_vit_large.json
+│   └── mae_pretrain_vit_base_test.json
 ├── docs/
-│   ├── pytorch_cpp_setup.md  # PyTorch C++ setup guide
-│   └── dataset_setup.md      # Dataset preparation guide
+│   ├── pytorch_cpp_setup.md   # PyTorch C++ installation guide
+│   ├── dataset_setup.md        # Dataset preparation guide
+│   ├── pretraining_guide.md    # Detailed pretraining instructions
+│   └── mae_server_guide.md     # Server usage and API documentation
 ├── CMakeLists.txt         # CMake build configuration
 └── README.md             # This file
 ```
@@ -40,12 +62,14 @@ MAE/
 - PyTorch C++ (LibTorch) 2.0+
 - OpenCV 4.x
 - CUDA 11.x or 12.x (for GPU support)
+- cpp-httplib (for server)
+- nlohmann/json 3.x
 
 ## Quick Start
 
 ### 1. Setup PyTorch C++
 
-Follow the detailed guide in `docs/pytorch_cpp_setup.md` to install LibTorch.
+Follow the detailed guide in [`docs/pytorch_cpp_setup.md`](docs/pytorch_cpp_setup.md) to install LibTorch.
 
 ```bash
 # Download LibTorch (example for CUDA 11.8)
@@ -63,7 +87,7 @@ cmake --build . --config Release -j$(nproc)
 
 ### 3. Prepare Dataset
 
-Follow `docs/dataset_setup.md` to prepare your dataset in ImageFolder format:
+Follow [`docs/dataset_setup.md`](docs/dataset_setup.md) to prepare your dataset:
 
 ```
 data/
@@ -76,7 +100,21 @@ data/
         └── ...
 ```
 
-### 4. Train the Model
+## Pretraining Models
+
+For full pretraining with proper configuration, see [`docs/pretraining_guide.md`](docs/pretraining_guide.md).
+
+### Quick Pretrain
+
+```bash
+# Using configuration file (recommended)
+./pretrain_mae configs/mae_pretrain_vit_base.json
+
+# Test with smaller batch size
+./pretrain_mae configs/mae_pretrain_vit_base_test.json
+```
+
+### Basic Training (Legacy)
 
 ```bash
 ./train_mae /path/to/data/train [batch_size] [epochs]
@@ -85,9 +123,48 @@ data/
 ./train_mae ../data/imagenet/train 64 400
 ```
 
-## Model Variants
+## Running the Inference Server
 
-The implementation includes three model variants:
+The MAE server provides a simple HTTP API for image reconstruction. See [`docs/mae_server_guide.md`](docs/mae_server_guide.md) for complete documentation.
+
+### Start Server
+
+```bash
+./mae_server --checkpoint checkpoints/model.pt --model mae_vit_base_patch16 --port 8080
+```
+
+### API Endpoints
+
+1. **POST /mask** - Create masked visualization
+2. **POST /reconstruct** - Reconstruct image with MAE
+3. **POST /mask_and_reconstruct** - Combined operation
+
+All endpoints accept binary image data with optional headers:
+- `X-Mask-Ratio`: Float between 0.0-1.0 (default: 0.75)
+- `X-Output-Type`: For combined endpoint - "masked", "reconstructed", or "both"
+
+### Example Usage
+
+```bash
+# Mask an image
+curl -X POST http://localhost:8080/mask \
+  --data-binary "@image.jpg" \
+  --output masked.png
+
+# Reconstruct an image
+curl -X POST http://localhost:8080/reconstruct \
+  -H "X-Mask-Ratio: 0.75" \
+  --data-binary "@image.jpg" \
+  --output reconstructed.png
+
+# Get both outputs side by side
+curl -X POST http://localhost:8080/mask_and_reconstruct \
+  -H "X-Output-Type: both" \
+  --data-binary "@image.jpg" \
+  --output comparison.png
+```
+
+## Model Variants
 
 | Model | Patches | Embed Dim | Heads | Layers | Params |
 |-------|---------|-----------|-------|---------|---------|
@@ -95,40 +172,45 @@ The implementation includes three model variants:
 | ViT-Large | 16x16 | 1024 | 16 | 24 | 304M |
 | ViT-Huge | 14x14 | 1280 | 16 | 32 | 632M |
 
-## Training Configuration
-
-Key training parameters (modify in `train_mae.cpp`):
-
-```cpp
-struct TrainingConfig {
-    std::string model_type = "mae_vit_base_patch16";
-    bool norm_pix_loss = true;
-    int64_t batch_size = 64;
-    int64_t epochs = 400;
-    double learning_rate = 1.5e-4;
-    double weight_decay = 0.05;
-    double mask_ratio = 0.75;
-    int64_t warmup_epochs = 40;
-};
-```
-
 ## Memory Requirements
 
-Approximate VRAM usage for different configurations:
+| Model | Batch Size | Resolution | Training VRAM | Inference VRAM |
+|-------|------------|------------|---------------|----------------|
+| ViT-Base | 64 | 224x224 | ~12GB | ~4GB |
+| ViT-Base | 128 | 224x224 | ~20GB | ~4GB |
+| ViT-Large | 32 | 224x224 | ~16GB | ~8GB |
+| ViT-Large | 64 | 224x224 | ~24GB | ~8GB |
 
-| Model | Batch Size | Resolution | VRAM Usage |
-|-------|------------|------------|------------|
-| ViT-Base | 64 | 224x224 | ~12GB |
-| ViT-Base | 128 | 224x224 | ~20GB |
-| ViT-Large | 32 | 224x224 | ~16GB |
-| ViT-Large | 64 | 224x224 | ~24GB |
+## Python Client Example
+
+```python
+import requests
+
+def reconstruct_image(image_path, server="http://localhost:8080"):
+    with open(image_path, 'rb') as f:
+        response = requests.post(
+            f"{server}/reconstruct",
+            data=f.read(),
+            headers={'X-Mask-Ratio': '0.75'}
+        )
+    
+    if response.status_code == 200:
+        with open("reconstructed.png", 'wb') as f:
+            f.write(response.content)
+```
 
 ## Performance Tips
 
-1. **Enable CUDNN Benchmark**: Automatically enabled in the code
-2. **Use Mixed Precision**: Add autocast for faster training
-3. **Optimize Batch Size**: Use the largest batch size that fits in memory
-4. **Data Loading**: Increase number of workers for faster data loading
+1. **Training**:
+   - Use the largest batch size that fits in memory
+   - Enable gradient accumulation for larger effective batch sizes
+   - Use fast storage (NVMe SSD) for dataset
+   - Increase data loader workers
+
+2. **Inference Server**:
+   - Keep server running (first request loads model)
+   - Use binary format (no base64 encoding)
+   - Enable GPU for faster processing
 
 ## Extending the Code
 
@@ -154,9 +236,16 @@ MaskedAutoencoderViT mae_vit_custom(bool norm_pix_loss) {
 }
 ```
 
-### Custom Data Augmentation
+## Documentation
 
-Extend the `ImageFolderDataset` class in `data_loader.cpp` to add custom augmentations.
+- [PyTorch C++ Setup Guide](docs/pytorch_cpp_setup.md) - Installing LibTorch and dependencies
+- [Dataset Setup Guide](docs/dataset_setup.md) - Preparing datasets for training
+- [Pretraining Guide](docs/pretraining_guide.md) - Detailed pretraining instructions
+- [Server Usage Guide](docs/mae_server_guide.md) - HTTP server API documentation
+
+## Demo
+
+![MAE Reconstruction Demo](docs/Comparison4.4.gif)
 
 ## Citation
 
